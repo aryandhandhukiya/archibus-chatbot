@@ -1,5 +1,7 @@
 # Use forward slashes for paths in .gitignore
 .streamlit/secrets.toml
+# Also include Windows-style path just to be safe
+.streamlit\secrets.toml
 venv/
 .git/
 __pycache__/
