@@ -1,3 +1,12 @@
-.streamlit\secrets.toml
+# Use forward slashes for paths in .gitignore
+.streamlit/secrets.toml
 venv/
 .git/
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+ENV/
+.DS_Store
