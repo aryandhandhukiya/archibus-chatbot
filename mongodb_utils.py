@@ -9,11 +9,14 @@ def get_mongo_client():
     """Get MongoDB client with improved error handling"""
     if "mongo_client" not in st.session_state:
         try:
-            # Check if we have connection details in secrets
+            # ONLY get connection string from secrets
             if "mongodb" in st.secrets and "uri" in st.secrets.mongodb:
-                connection_string = st.secrets.mongodb.uri.split("?")[0]
+                connection_string = st.secrets.mongodb.uri
             else:
-                connection_string = "mongodb+srv://shreyanshworkid:FVJNXzhYQg7xTSNy@archibus.2ttojrp.mongodb.net/"
+                # For development only, provide a helpful error
+                st.error("MongoDB connection string not found in secrets")
+                print("Error: MongoDB URI not found in secrets.toml")
+                return None
             
             # Use more compatible connection parameters
             st.session_state.mongo_client = MongoClient(
