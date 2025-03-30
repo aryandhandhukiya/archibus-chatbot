@@ -51,27 +51,27 @@ def delete_chat(chat_id):
     result = db.chats.delete_one({"_id": ObjectId(chat_id)})
     return result.deleted_count > 0
 
-def create_new_chat(title=None):
+def create_new_chat(title="New Chat"):
     """Create a new chat and return its ID"""
-    db = get_db()
-    if db is None:
-        return None
-    
     try:
-        # Use provided title or default
-        if not title:
-            title = "New Chat"
+        db = get_db()
+        if db is None:
+            st.sidebar.warning("Database connection unavailable")
+            return None
             
+        # Create a new chat document
         now = datetime.now()
         result = db.chats.insert_one({
             "title": title,
-            "messages": [],
             "created_at": now,
-            "updated_at": now
+            "updated_at": now,
+            "messages": []
         })
-        return str(result.inserted_id)
+        
+        return str(result.inserted_id) if result.inserted_id else None
     except Exception as e:
-        st.error(f"Error creating new chat: {str(e)}")
+        # Log error but don't crash
+        print(f"Error creating chat: {str(e)}")
         return None
 
 def save_message(chat_id, role, content, image_urls=None):

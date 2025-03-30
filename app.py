@@ -10,7 +10,8 @@ from mongodb_utils import (
     get_chat_list, 
     get_chat_by_id,
     search_chats,
-    delete_chat
+    delete_chat,
+    get_db
 )
 
 # Page configuration
@@ -120,7 +121,6 @@ st.markdown(
 st.sidebar.title("Archibus Chat")
 
 # New Chat Button
-# In the New Chat Button handler around line 123:
 if st.sidebar.button("➕ New Chat", key="new_chat"):
     try:
         # Create new chat in MongoDB
@@ -139,7 +139,7 @@ search_query = st.sidebar.text_input("Search by topic:", key="search_input", val
 if search_query != st.session_state.search_query:
     st.session_state.search_query = search_query
     st.rerun()  # Changed from st.experimental_rerun()
-
+ 
 # Display Chat History
 st.sidebar.markdown("## Chat History")
 
@@ -244,6 +244,30 @@ def display_chat_history():
                 for img_url in message["image_urls"]:
                     st.image(img_url, caption="Relevant Image")
 
+# ✅ Function to create new chat
+def create_new_chat_local(title="New Chat"):
+    """Create a new chat and return its ID - separate from mongodb_utils version"""
+    try:
+        db = get_db()
+        if db is None:
+            st.sidebar.warning("Database connection unavailable")
+            return None
+            
+        # Create a new chat document
+        now = datetime.now()
+        result = db.chats.insert_one({
+            "title": title,
+            "created_at": now,
+            "updated_at": now,
+            "messages": []
+        })
+        
+        return str(result.inserted_id) if result.inserted_id else None
+    except Exception as e:
+        # Log error but don't crash
+        print(f"Error creating chat: {str(e)}")
+        return None
+
 # ✅ Handle User Input and Display Steps + Images
 def handle_user_input(prompt):
     """Processes user input and retrieves AI response & multiple images in order."""
@@ -256,19 +280,27 @@ def handle_user_input(prompt):
 
     # ✅ Create a new chat IMMEDIATELY when user sends first message
     if not st.session_state.current_chat_id:
-        # Use first part of the user's message as the chat title
-        chat_title = prompt[:40] + ("..." if len(prompt) > 40 else "")
-        new_chat_id = create_new_chat(title=chat_title)
-        if new_chat_id:
-            st.session_state.current_chat_id = new_chat_id
-            new_chat_created = True
+        try:
+            # Use first part of the user's message as the chat title
+            chat_title = prompt[:40] + ("..." if len(prompt) > 40 else "")
+            new_chat_id = create_new_chat_local(title=chat_title)
+            if new_chat_id:
+                st.session_state.current_chat_id = new_chat_id
+                new_chat_created = True
+        except Exception as e:
+            st.warning("Chat history will not be saved due to database connection issues")
+            print(f"Error creating new chat: {str(e)}")
     
     # ✅ Add user message to session state
     st.session_state.messages.append({"role": "user", "content": prompt})
     
     # ✅ Save user message to MongoDB if a chat exists
     if st.session_state.current_chat_id:
-        save_message(st.session_state.current_chat_id, "user", prompt)
+        try:
+            save_message(st.session_state.current_chat_id, "user", prompt)
+        except Exception as e:
+            print(f"Error saving user message: {str(e)}")
+            # Continue without crashing
 
     # Continue with the rest of the function (display message, get AI response, etc.)
     with st.chat_message("user"):
@@ -276,43 +308,53 @@ def handle_user_input(prompt):
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            # ✅ Generate response
-            response_text = generate_response(prompt, st.session_state.language)
+            try:
+                # ✅ Generate response
+                response_text = generate_response(prompt, st.session_state.language)
 
-            # ✅ Fetch images
-            image_urls = find_relevant_images(prompt, top_k=5)
-            image_urls = [url for url in image_urls if url]  # ✅ Remove blank images  
+                # ✅ Fetch images
+                image_urls = find_relevant_images(prompt, top_k=5)
+                image_urls = [url for url in image_urls if url]  # ✅ Remove blank images  
 
-            response_message = {"role": "assistant", "content": response_text}
-            if image_urls:
-                response_message["image_urls"] = list(dict.fromkeys(image_urls))  # Remove duplicates
-            
-            # ✅ Add response to session state
-            st.session_state.messages.append(response_message)
-            
-            # ✅ Save response to MongoDB
-            if st.session_state.current_chat_id:
-                save_message(
-                    st.session_state.current_chat_id,
-                    "assistant", 
-                    response_text, 
-                    response_message.get("image_urls")
-                )
+                response_message = {"role": "assistant", "content": response_text}
+                if image_urls:
+                    response_message["image_urls"] = list(dict.fromkeys(image_urls))  # Remove duplicates
+                
+                # ✅ Add response to session state
+                st.session_state.messages.append(response_message)
+                
+                # ✅ Save response to MongoDB
+                if st.session_state.current_chat_id:
+                    try:
+                        save_message(
+                            st.session_state.current_chat_id,
+                            "assistant", 
+                            response_text, 
+                            response_message.get("image_urls")
+                        )
+                    except Exception as e:
+                        print(f"Error saving assistant message: {str(e)}")
+                        # Continue without crashing
 
-            # ✅ Display formatted response
-            st.markdown("### AI Response")
-            st.markdown(response_text)
+                # ✅ Display formatted response
+                st.markdown("### AI Response")
+                st.markdown(response_text)
 
-            # ✅ Step-wise Display with Grouped Sections
-            st.markdown("### Key Sections")
+                # ✅ Step-wise Display with Grouped Sections
+                st.markdown("### Key Sections")
 
-            sections = response_text.split("\n\n")  # Split response into sections
+                sections = response_text.split("\n\n")  # Split response into sections
 
-            for idx, section in enumerate(sections):
-                st.markdown(f"#### {section}")
+                for idx, section in enumerate(sections):
+                    st.markdown(f"#### {section}")
 
-                if idx < len(image_urls):
-                    st.image(image_urls[idx], caption=f"Relevant Image {idx+1}")
+                    if idx < len(image_urls):
+                        st.image(image_urls[idx], caption=f"Relevant Image {idx+1}")
+                        
+            except Exception as e:
+                error_message = f"An error occurred while generating a response: {str(e)}"
+                st.error(error_message)
+                print(error_message)
     
     # Force a refresh AFTER AI has responded if this is a new chat
     if new_chat_created:
@@ -322,12 +364,6 @@ def handle_user_input(prompt):
 # ✅ Streamlit UI
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")
-
-# If no active chat, create one
-# if not st.session_state.current_chat_id and not st.session_state.messages:
-#     new_chat_id = create_new_chat()
-#     if new_chat_id:
-#         st.session_state.current_chat_id = new_chat_id
 
 display_chat_history()
 
