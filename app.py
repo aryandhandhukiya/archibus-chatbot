@@ -286,13 +286,15 @@ def handle_user_input(prompt):
             
             # Fetch images
             image_urls = find_relevant_images(prompt, top_k=5)
-            image_urls = [url for url in image_urls if url]  # Remove blank images
+            
+            # Fix for NoneType error - check if image_urls is None
+            image_urls = [url for url in image_urls if url] if image_urls is not None else []
             
             # Create response message
             response_message = {"role": "assistant", "content": response_text}
             if image_urls:
                 response_message["image_urls"] = list(dict.fromkeys(image_urls))  # Remove duplicates
-            
+        
             # Add assistant message to session state
             st.session_state.messages.append(response_message)
             
