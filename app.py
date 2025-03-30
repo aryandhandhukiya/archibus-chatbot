@@ -83,13 +83,13 @@ def handle_user_input(prompt):
             st.session_state.messages.append(response_message)
 
             # ✅ Display formatted response
-            st.markdown('<div class="response-container">', unsafe_allow_html=True)
-            st.markdown("### AI Response")
-            st.markdown(response_text)  # Full response first
-            st.markdown("</div>", unsafe_allow_html=True)
+            #st.markdown('<div class="response-container">', unsafe_allow_html=True)
+            #st.markdown("### AI Response")
+            #st.markdown(response_text)  # Full response first
+            #st.markdown("</div>", unsafe_allow_html=True)
 
             # ✅ Step-wise Display with Grouped Sections
-            st.markdown("### Key Sections")
+            st.markdown("### AI Response")
 
             sections = response_text.split("\n\n")  # Split response into sections
 
@@ -99,13 +99,7 @@ def handle_user_input(prompt):
                 if idx < len(image_urls):
                     st.image(image_urls[idx], caption=f"Relevant Image {idx+1}")
             
-            # ✅ Satisfaction Check
-            # feedback = st.radio("Are you satisfied with the response?", ["Yes", "No"], index=0, horizontal=True)
-
-            # if feedback == "No":
-            #     if st.button("Regenerate Response"):
-            #         handle_user_input(prompt)
-
+            
 # ✅ Streamlit UI
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")
