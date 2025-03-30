@@ -1,13 +1,19 @@
 import os
 import sys
-
-# Now import the rest of your modules (no ChromaDB dependencies)
 import streamlit as st
+from datetime import datetime, timedelta
 from chatbot.response_generator import generate_response
 from chatbot.query_handler import find_relevant_images
+from mongodb_utils import (
+    create_new_chat, 
+    save_message, 
+    get_chat_list, 
+    get_chat_by_id,
+    search_chats,
+    delete_chat
+)
 
-# Rest of your app code...
-
+# Page configuration
 st.set_page_config(page_title="Archibus AI", layout="wide")
 
 # ✅ Ensure Session State Variables Exist
@@ -17,8 +23,13 @@ if "messages" not in st.session_state:
 if "language" not in st.session_state:
     st.session_state.language = "Japanese"
 
-# ✅ Custom Navbar
-# Replace or add to your existing st.markdown CSS section:
+if "current_chat_id" not in st.session_state:
+    st.session_state.current_chat_id = None
+
+if "search_query" not in st.session_state:
+    st.session_state.search_query = ""
+
+# ✅ Custom CSS
 st.markdown(
     """
     <style>
@@ -81,25 +92,131 @@ st.markdown(
             font-size: 20px;
             font-weight: bold;
         }
+
+        /* Chat history styling */
+        .chat-item {
+            padding: 8px 12px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .chat-item:hover {
+            background-color: rgba(49, 51, 63, 0.1);
+        }
+        
+        .chat-date {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 2px;
+        }
     </style>
     """,
     unsafe_allow_html=True
 )
 
+# ✅ Sidebar UI
+st.sidebar.title("Archibus Chat")
 
+# New Chat Button
+if st.sidebar.button("➕ New Chat", key="new_chat"):
+    # Create new chat in MongoDB
+    new_chat_id = create_new_chat()
+    if new_chat_id:
+        st.session_state.current_chat_id = new_chat_id
+        st.session_state.messages = []
+        st.rerun()  # Changed from st.experimental_rerun()
 
-# ✅ Sidebar UI (New Chat, Search, Language Selector)
-st.sidebar.title("Settings")
+# Search functionality
+st.sidebar.markdown("## Search Conversations")
+search_query = st.sidebar.text_input("Search by topic:", key="search_input", value=st.session_state.search_query)
 
-if st.sidebar.button("➕ New Chat"):
-    st.session_state.messages = []  # Reset chat history
+if search_query != st.session_state.search_query:
+    st.session_state.search_query = search_query
+    st.rerun()  # Changed from st.experimental_rerun()
 
-if st.sidebar.button("🔍 Search"):
-    st.warning("Search functionality is not yet implemented.")
+# Display Chat History
+st.sidebar.markdown("## Chat History")
+
+# Group chats by date
+chat_list = get_chat_list()
+filtered_chats = []
+
+if st.session_state.search_query:
+    # Display search results
+    search_results = search_chats(st.session_state.search_query)
+    filtered_chats = search_results
+    if not search_results:
+        st.sidebar.info(f"No results found for '{st.session_state.search_query}'")
+else:
+    # Display all chats
+    filtered_chats = chat_list
+
+# Group chats by date
+today = datetime.now().date()
+yesterday = today - timedelta(days=1)
+this_week = today - timedelta(days=7)
+this_month = today.replace(day=1)
+
+today_chats = []
+yesterday_chats = []
+this_week_chats = []
+this_month_chats = []
+older_chats = []
+
+for chat in filtered_chats:
+    chat_date = chat["updated_at"].date()
+    if chat_date == today:
+        today_chats.append(chat)
+    elif chat_date == yesterday:
+        yesterday_chats.append(chat)
+    elif chat_date > this_week:
+        this_week_chats.append(chat)
+    elif chat_date >= this_month:
+        this_month_chats.append(chat)
+    else:
+        older_chats.append(chat)
+
+# Function to display chat items
+def render_chat_list(title, chats):
+    if chats:
+        st.sidebar.markdown(f"### {title}")
+        for chat in chats:
+            chat_id = str(chat["_id"])
+            chat_title = chat.get("title", "Untitled Chat")
+            
+            # Create a horizontal layout with columns
+            col1, col2 = st.sidebar.columns([4, 1])
+            
+            # Chat button in the first (wider) column
+            if col1.button(f"{chat_title}", key=f"chat_{chat_id}"):
+                chat_data = get_chat_by_id(chat_id)
+                if chat_data:
+                    st.session_state.current_chat_id = chat_id
+                    st.session_state.messages = chat_data.get("messages", [])
+                    st.rerun()
+            
+            # Delete button in the second (narrower) column
+            if col2.button("🗑️", key=f"delete_{chat_id}"):
+                if delete_chat(chat_id):
+                    # If the deleted chat was the current chat, clear the messages
+                    if st.session_state.current_chat_id == chat_id:
+                        st.session_state.current_chat_id = None
+                        st.session_state.messages = []
+                    st.rerun()
+
+# Display grouped chats
+render_chat_list("Today", today_chats)
+render_chat_list("Yesterday", yesterday_chats)
+render_chat_list("This Week", this_week_chats)
+render_chat_list("This Month", this_month_chats)
+render_chat_list("Older", older_chats)
 
 # ✅ Language selection in sidebar
+st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
-st.session_state.language = selected_language  # Update session state with selected language
+st.session_state.language = selected_language
 
 # ✅ Display Chat History
 def display_chat_history():
@@ -114,7 +231,22 @@ def display_chat_history():
 # ✅ Handle User Input and Display Steps + Images
 def handle_user_input(prompt):
     """Processes user input and retrieves AI response & multiple images in order."""
+    
+    if not prompt.strip():  # ✅ Prevent empty messages from being processed
+        return  
+
+    # ✅ Ensure an existing chat is used, only create if necessary
+    if not st.session_state.current_chat_id and st.session_state.messages:
+        new_chat_id = create_new_chat()
+        if new_chat_id:
+            st.session_state.current_chat_id = new_chat_id
+    
+    # ✅ Add user message to session state
     st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # ✅ Save user message to MongoDB if a chat exists
+    if st.session_state.current_chat_id:
+        save_message(st.session_state.current_chat_id, "user", prompt)
 
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -132,13 +264,21 @@ def handle_user_input(prompt):
             if image_urls:
                 response_message["image_urls"] = list(dict.fromkeys(image_urls))  # Remove duplicates
             
+            # ✅ Add response to session state
             st.session_state.messages.append(response_message)
+            
+            # ✅ Save response to MongoDB
+            if st.session_state.current_chat_id:
+                save_message(
+                    st.session_state.current_chat_id,
+                    "assistant", 
+                    response_text, 
+                    response_message.get("image_urls")
+                )
 
             # ✅ Display formatted response
-            st.markdown('<div class="response-container">', unsafe_allow_html=True)
             st.markdown("### AI Response")
-            st.markdown(response_text)  # Full response first
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(response_text)
 
             # ✅ Step-wise Display with Grouped Sections
             st.markdown("### Key Sections")
@@ -150,17 +290,17 @@ def handle_user_input(prompt):
 
                 if idx < len(image_urls):
                     st.image(image_urls[idx], caption=f"Relevant Image {idx+1}")
-            
-            # ✅ Satisfaction Check
-            # feedback = st.radio("Are you satisfied with the response?", ["Yes", "No"], index=0, horizontal=True)
 
-            # if feedback == "No":
-            #     if st.button("Regenerate Response"):
-            #         handle_user_input(prompt)
 
 # ✅ Streamlit UI
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")
+
+# If no active chat, create one
+# if not st.session_state.current_chat_id and not st.session_state.messages:
+#     new_chat_id = create_new_chat()
+#     if new_chat_id:
+#         st.session_state.current_chat_id = new_chat_id
 
 display_chat_history()
 
