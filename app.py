@@ -120,13 +120,17 @@ st.markdown(
 st.sidebar.title("Archibus Chat")
 
 # New Chat Button
+# In the New Chat Button handler around line 123:
 if st.sidebar.button("➕ New Chat", key="new_chat"):
-    # Create new chat in MongoDB
-    new_chat_id = create_new_chat()
-    if new_chat_id:
-        st.session_state.current_chat_id = new_chat_id
-        st.session_state.messages = []
-        st.rerun()  # Changed from st.experimental_rerun()
+    try:
+        # Create new chat in MongoDB
+        new_chat_id = create_new_chat()
+        if new_chat_id:
+            st.session_state.current_chat_id = new_chat_id
+            st.session_state.messages = []
+            st.rerun()
+    except Exception as e:
+        st.sidebar.error("Could not create new chat. Database connection issue.")
 
 # Search functionality
 st.sidebar.markdown("## Search Conversations")
@@ -139,44 +143,56 @@ if search_query != st.session_state.search_query:
 # Display Chat History
 st.sidebar.markdown("## Chat History")
 
-# Group chats by date
-chat_list = get_chat_list()
+# Around line 143, modify the chat history display:
 filtered_chats = []
 
-if st.session_state.search_query:
-    # Display search results
-    search_results = search_chats(st.session_state.search_query)
-    filtered_chats = search_results
-    if not search_results:
-        st.sidebar.info(f"No results found for '{st.session_state.search_query}'")
-else:
-    # Display all chats
-    filtered_chats = chat_list
+try:
+    chat_list = get_chat_list()
+    if chat_list:  # If we got a valid list
+        filtered_chats = chat_list
+        
+        if st.session_state.search_query:
+            # Display search results
+            search_results = search_chats(st.session_state.search_query)
+            if search_results:
+                filtered_chats = search_results
+            else:
+                st.sidebar.info(f"No results found for '{st.session_state.search_query}'")
+                filtered_chats = []
+except Exception as e:
+    st.sidebar.error(f"Could not load chat history. Database connection issue.")
 
-# Group chats by date
-today = datetime.now().date()
-yesterday = today - timedelta(days=1)
-this_week = today - timedelta(days=7)
-this_month = today.replace(day=1)
-
+# Group chats by date - only if we have chats
 today_chats = []
 yesterday_chats = []
 this_week_chats = []
 this_month_chats = []
 older_chats = []
 
-for chat in filtered_chats:
-    chat_date = chat["updated_at"].date()
-    if chat_date == today:
-        today_chats.append(chat)
-    elif chat_date == yesterday:
-        yesterday_chats.append(chat)
-    elif chat_date > this_week:
-        this_week_chats.append(chat)
-    elif chat_date >= this_month:
-        this_month_chats.append(chat)
-    else:
-        older_chats.append(chat)
+if filtered_chats:
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    this_week = today - timedelta(days=7)
+    this_month = today.replace(day=1)
+
+    for chat in filtered_chats:
+        # Make sure we have updated_at field with proper date
+        if "updated_at" in chat and hasattr(chat["updated_at"], "date"):
+            chat_date = chat["updated_at"].date()
+            
+            if chat_date == today:
+                today_chats.append(chat)
+            elif chat_date == yesterday:
+                yesterday_chats.append(chat)
+            elif chat_date > this_week:
+                this_week_chats.append(chat)
+            elif chat_date >= this_month:
+                this_month_chats.append(chat)
+            else:
+                older_chats.append(chat)
+        else:
+            # If no date or invalid date format, put in today's chats
+            today_chats.append(chat)
 
 # Function to display chat items
 def render_chat_list(title, chats):
@@ -235,11 +251,17 @@ def handle_user_input(prompt):
     if not prompt.strip():  # ✅ Prevent empty messages from being processed
         return  
 
-    # ✅ Ensure an existing chat is used, only create if necessary
-    if not st.session_state.current_chat_id and st.session_state.messages:
-        new_chat_id = create_new_chat()
+    # Track if this is a new chat being created
+    new_chat_created = False
+
+    # ✅ Create a new chat IMMEDIATELY when user sends first message
+    if not st.session_state.current_chat_id:
+        # Use first part of the user's message as the chat title
+        chat_title = prompt[:40] + ("..." if len(prompt) > 40 else "")
+        new_chat_id = create_new_chat(title=chat_title)
         if new_chat_id:
             st.session_state.current_chat_id = new_chat_id
+            new_chat_created = True
     
     # ✅ Add user message to session state
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -248,6 +270,7 @@ def handle_user_input(prompt):
     if st.session_state.current_chat_id:
         save_message(st.session_state.current_chat_id, "user", prompt)
 
+    # Continue with the rest of the function (display message, get AI response, etc.)
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -290,6 +313,10 @@ def handle_user_input(prompt):
 
                 if idx < len(image_urls):
                     st.image(image_urls[idx], caption=f"Relevant Image {idx+1}")
+    
+    # Force a refresh AFTER AI has responded if this is a new chat
+    if new_chat_created:
+        st.rerun()
 
 
 # ✅ Streamlit UI
@@ -303,6 +330,11 @@ st.markdown("Welcome to Archibus AI")
 #         st.session_state.current_chat_id = new_chat_id
 
 display_chat_history()
+
+# Add a message to show when no MongoDB connection
+if not st.session_state.current_chat_id and st.session_state.messages == []:
+    st.info("Enter your question below to start a conversation with Archibus AI.")
+    st.info("Note: Chat history functionality may be limited if database connection is unavailable.")
 
 if prompt := st.chat_input("Ask me anything..."):
     handle_user_input(prompt)

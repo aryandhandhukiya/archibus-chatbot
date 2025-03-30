@@ -6,15 +6,31 @@ import streamlit as st
 from bson.objectid import ObjectId
 
 def get_mongo_client():
-    """Get MongoDB client from connection string"""
+    """Get MongoDB client with improved error handling"""
     if "mongo_client" not in st.session_state:
-        connection_string = "mongodb+srv://shreyanshworkid:FVJNXzhYQg7xTSNy@archibus.2ttojrp.mongodb.net/"
         try:
-            st.session_state.mongo_client = MongoClient(connection_string)
-            # Test connection
-            st.session_state.mongo_client.admin.command('ping')
-        except ConnectionFailure:
-            st.error("Failed to connect to MongoDB. Check your connection string.")
+            # Check if we have connection details in secrets
+            if "mongodb" in st.secrets and "uri" in st.secrets.mongodb:
+                connection_string = st.secrets.mongodb.uri.split("?")[0]
+            else:
+                connection_string = "mongodb+srv://shreyanshworkid:FVJNXzhYQg7xTSNy@archibus.2ttojrp.mongodb.net/"
+            
+            # Use more compatible connection parameters
+            st.session_state.mongo_client = MongoClient(
+                connection_string,
+                ssl=True,
+                tlsAllowInvalidCertificates=True,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
+                serverSelectionTimeoutMS=10000
+            )
+            
+            # Quick test connection
+            st.session_state.mongo_client.admin.command('ping', serverSelectionTimeoutMS=5000)
+            
+        except Exception as e:
+            st.session_state.mongo_client = None
+            st.sidebar.error(f"MongoDB connection error: {str(e)}")
             return None
     
     return st.session_state.mongo_client
@@ -35,20 +51,28 @@ def delete_chat(chat_id):
     result = db.chats.delete_one({"_id": ObjectId(chat_id)})
     return result.deleted_count > 0
 
-def create_new_chat():
+def create_new_chat(title=None):
     """Create a new chat and return its ID"""
     db = get_db()
     if db is None:
         return None
-        
-    chat_id = db.chats.insert_one({
-        "title": f"New Chat",
-        "created_at": datetime.now(),
-        "updated_at": datetime.now(),
-        "messages": []
-    }).inserted_id
     
-    return str(chat_id)
+    try:
+        # Use provided title or default
+        if not title:
+            title = "New Chat"
+            
+        now = datetime.now()
+        result = db.chats.insert_one({
+            "title": title,
+            "messages": [],
+            "created_at": now,
+            "updated_at": now
+        })
+        return str(result.inserted_id)
+    except Exception as e:
+        st.error(f"Error creating new chat: {str(e)}")
+        return None
 
 def save_message(chat_id, role, content, image_urls=None):
     """Save a message to a specific chat"""
