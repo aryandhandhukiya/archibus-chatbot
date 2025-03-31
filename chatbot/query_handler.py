@@ -46,59 +46,69 @@ def find_relevant_images(query, top_k=5):
             print("ChromaDB or embedding model not available")
             return []
         
-        # Encode the query
-        query_embedding = embed_model.encode(query).tolist()
+        # Preprocess query to include maintenance terms
+        expanded_query = query
+        if any(term in query.lower() for term in ['maintenance', 'procedure', 'setup']):
+            expanded_query = f"{query} guide process workflow"
         
-        # Query the collection
+        # Encode the query
+        query_embedding = embed_model.encode(expanded_query).tolist()
+        
+        # Query the collection with increased results
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
             include=["metadatas"]
         )
         
-        # Debug: Print the raw results structure (not full content)
         print(f"ChromaDB query returned {len(results.get('metadatas', []))} results")
         
-        images_with_steps = []
+        # Process and sort images
+        images_with_scores = []
         if results and "metadatas" in results:
             for metadata_list in results["metadatas"]:
                 for metadata in metadata_list:
                     if "s3_url" in metadata:
-                        step_number = extract_step_number(metadata)
-                        images_with_steps.append((step_number, metadata["s3_url"]))
+                        # Check if URL contains relevant keywords
+                        url_lower = metadata["s3_url"].lower()
+                        relevancy_boost = 1.0
+                        if any(term in url_lower for term in ['maintenance', 'procedure', 'guide']):
+                            relevancy_boost = 1.5
+                        
+                        step_num = extract_step_number(metadata)
+                        images_with_scores.append((
+                            step_num,
+                            metadata["s3_url"],
+                            relevancy_boost
+                        ))
         
-        # Sort images by step number
-        sorted_images = sorted(images_with_steps, key=lambda x: x[0])
-        urls_list = [img_url for _, img_url in sorted_images] if sorted_images else []
+        # Sort by step number and relevancy boost
+        sorted_images = sorted(images_with_scores, key=lambda x: (x[0], -x[2]))
+        urls_list = [img_url for _, img_url, _ in sorted_images] if sorted_images else []
         
-        # After getting image paths, convert local paths to accessible URLs
+        # Process URLs
         image_urls = []
         for url in urls_list:
             if url:
-                # If it's already a web URL (starts with http), use as is
                 if url.startswith('http'):
                     image_urls.append(url)
                     print(f"Using web URL: {url}")
-                # If it's a local path, read the image and convert to base64
                 else:
                     try:
-                        # Try to open the image
                         img = Image.open(url)
                         buffered = io.BytesIO()
                         img.save(buffered, format="PNG")
                         img_str = base64.b64encode(buffered.getvalue()).decode()
-                        
-                        # Create a data URI
                         data_uri = f"data:image/png;base64,{img_str}"
                         image_urls.append(data_uri)
                         print(f"Converted local file to data URI: {url}")
                     except Exception as img_err:
                         print(f"Error processing image {url}: {img_err}")
+                        continue
         
-        # Debug: Print number of processed URLs
         print(f"Processed {len(image_urls)} image URLs successfully")
-        
         return image_urls
+        
     except Exception as e:
         print(f"Error in find_relevant_images: {str(e)}")
         return []

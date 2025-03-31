@@ -114,7 +114,7 @@ st.markdown(
         /* Chat section header styling */
         .chat-section-header {
             font-size: 20px !important;
-            color: white !important;
+            color: #000000 !important; /* Changed from white to black */
             margin-top: 8px !important;
             margin-bottom: 4px !important;
             padding-bottom: 2px !important;
@@ -320,7 +320,7 @@ if st.session_state.pending_chat_id is not None:
     st.session_state.pending_chat_id = None  # Clear pending ID
     load_chat_by_id(chat_id)
 
-# Display grouped chats
+# Display grouped chats with updated color
 render_chat_list("Today", today_chats)
 render_chat_list("Yesterday", yesterday_chats)
 render_chat_list("This Week", this_week_chats)
