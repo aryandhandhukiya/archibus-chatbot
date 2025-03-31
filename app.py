@@ -433,7 +433,7 @@ def handle_user_input(prompt):
             st.rerun()
             
 # ✅ Streamlit UI
-st.title("Archibus AI")
+st.title("Archibus")
 st.markdown("Welcome to Archibus AI")
 
 display_chat_history()
