@@ -51,11 +51,61 @@ else:
 # Combine static system instruction with custom instruction
 FULL_INSTRUCTION = f"{BASE_INSTRUCTION}\n\n{additional_instructions}"
 
-def generate_response(prompt, language="Japanese"):
-    """Generates AI response based on user input and language selection."""
-    full_prompt = f"{BASE_INSTRUCTION}\n\nUser Query: {prompt}\n\nLanguage: {language}"
+def generate_response(prompt, language="Japanese", max_retries=3):
+    """Generates AI response based on user input and language selection with retry mechanism."""
+    try:
+        # Enhanced prompt with completion markers
+        structured_prompt = f"""
+{BASE_INSTRUCTION}
 
-    chat_session = model.start_chat(history=[{"role": "user", "parts": [full_prompt]}])
-    response = chat_session.send_message(full_prompt)
+User Query: {prompt}
+Language: {language}
 
-    return response.text
+Important:
+- Provide a complete response
+- End your response with "[END_OF_RESPONSE]"
+- Include all relevant details
+- Structure your answer with clear sections
+"""
+
+        for attempt in range(max_retries):
+            try:
+                chat_session = model.start_chat(history=[])
+                response = chat_session.send_message(
+                    structured_prompt,
+                    generation_config={
+                        **generation_config,
+                        "max_output_tokens": 4096,  # Increased token limit
+                        "stop_sequences": ["[END_OF_RESPONSE]"]
+                    }
+                )
+                
+                response_text = response.text
+                
+                # Verify response completion
+                if not response_text.strip():
+                    continue  # Retry if empty response
+                    
+                if "[END_OF_RESPONSE]" not in response_text:
+                    response_text += "\n[END_OF_RESPONSE]"
+                    
+                # Clean up the response
+                final_response = response_text.replace("[END_OF_RESPONSE]", "").strip()
+                
+                # Verify minimum response length
+                if len(final_response) < 50:  # Adjust threshold as needed
+                    continue  # Retry if response too short
+                    
+                return final_response
+                
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == max_retries - 1:
+                    raise
+                
+        return "申し訳ございません。現在システムが混雑しています。もう一度お試しください。" if language == "Japanese" else \
+               "I apologize. The system is currently busy. Please try again."
+               
+    except Exception as e:
+        print(f"Error generating response: {str(e)}")
+        return "エラーが発生しました。" if language == "Japanese" else "An error occurred."
