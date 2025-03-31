@@ -11,6 +11,9 @@ from mongodb_utils import (
     delete_chat,
     get_db
 )
+from bson.objectid import ObjectId
+import traceback
+import html
 
 st.set_page_config(page_title="Archibus AI", layout="wide")
 
@@ -27,95 +30,116 @@ if "current_chat_id" not in st.session_state:
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 
+if "pending_chat_id" not in st.session_state:
+    st.session_state.pending_chat_id = None
+
 # ✅ Custom Navbar
+# Update the CSS styling section with enhanced UI for history
 st.markdown(
     """
     <style>
-        /* ✅ Hide "Manage App" button */
-        .stDeployButton, 
-        .viewerBadge_container__1QSob,
-        #manage-app-button {
-            display: none !important;
+        /* Global Styling */
+        body {
+            font-family: 'Arial', sans-serif;
         }
 
-        /* ✅ Hide "Hosted with Streamlit" message & GitHub logo from footer */
-        footer, .viewerBadge_link__1S137 {
-            display: none !important;
-            visibility: hidden !important;
-        }
-        
-        /* ✅ Hide any additional elements in the footer */
-        footer .st-emotion-cache, footer div {
-            display: none !important;
-        }
-
-        /* ✅ Keep the three-dot (⋮) menu visible */
-        button[data-testid="stAppViewerMenuButton"] {
-            display: inline-flex !important;
-            visibility: visible !important;
-        }
-
-        /* ✅ Hide Streamlit Main Menu (GitHub logo) */
-        #MainMenu {
-            display: none !important;
-        }
-
-        /* ✅ Hide unnecessary toolbar elements */
-        div[data-testid="stToolbar"] {
-            display: none !important;
-        }
-
-        /* ✅ Hide unwanted toolbar buttons */
-        button[title="View fullscreen"],
-        button[title="Download"],
-        button[title="Share"],
-        button[title="View source"],
-        button[title="Edit source"],
-        button[title="Star"] {
-            display: none !important;
-        }
-
-        /* ✅ Style adjustments for navbar */
+        /* ✅ Navbar Styling */
         .navbar {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 0.75rem 1.5rem;
-            background-color: #121212;
+            padding: 5px 5px;
+            background-color: #262730;
             color: white;
-            border-bottom: 1px solid #333;
-        }
-
-        .navbar-title {
-            font-size: 20px;
+            border-bottom: 2px solid #333;
+            font-size: 18px;
             font-weight: bold;
         }
 
-        /* Chat history styling */
+        /* ✅ Sidebar Styling */
+        .sidebar-content {
+            padding: 10px 15px;
+            background-color: #f9f9f9;
+            border-right: 2px solid #ddd;
+        }
+
+        /* ✅ Chat History Styling */
         .chat-item {
-            padding: 8px 12px;
-            margin-bottom: 5px;
+            padding: 5px !important;
+            margin: 9px 0 !important;
             border-radius: 4px;
             cursor: pointer;
+            background-color: #f4f4f4;
             transition: background-color 0.2s;
+            height: 36px !important;
+            overflow: hidden;
         }
         
+        /* Fixed height for chat title button */
+        .stButton button {
+            height: 36px !important;
+            min-height: 36px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+
         .chat-item:hover {
-            background-color: rgba(49, 51, 63, 0.1);
+            background-color: #eaeaea;
+        }
+
+        .active-chat button {
+            background-color: #ff4d4d !important; 
+            color: white !important;
+            font-weight: bold !important;
+        }
+
+        /* ✅ Delete Button */
+        .delete-btn {
+            
+            width: 24px !important;
+            height: 24px !important;
+            min-height: 0 !important;
+            line-height: 1 !important;
+            font-size: 10px !important;
+            color: #888 !important;
+            background-color: transparent !important;
+        }
+
+        .delete-btn:hover {
+            color: #ff4d4d !important;
+            background-color: rgba(255, 77, 77, 0.1) !important;
         }
         
-        .chat-date {
-            font-size: 0.75rem;
-            color: #666;
-            margin-top: 2px;
+        /* Chat section header styling */
+        .chat-section-header {
+            font-size: 20px !important;
+            color: white !important;
+            margin-top: 8px !important;
+            margin-bottom: 4px !important;
+            padding-bottom: 2px !important;
         }
+        
+        /* Reduce spacing in sidebar */
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+        }
+        
+        /* Compact sidebar sections */
+        .sidebar .stMarkdown h2 {
+            margin-top: 0.5rem !important;
+            margin-bottom: 0.3rem !important;
+            font-size: 1.1rem !important;
+        }
+
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # ✅ Function to create a title from prompt
-def generate_title_from_prompt(prompt, max_length=30):
+def generate_title_from_prompt(prompt, max_length=20):
     """Generate a title from the user prompt."""
     # Remove special characters and normalize whitespace
     clean_prompt = ' '.join(prompt.split())
@@ -128,49 +152,86 @@ def generate_title_from_prompt(prompt, max_length=30):
         
     return title
 
+# Function to load chat by ID - separated for clarity
+def load_chat_by_id(chat_id):
+    """Load a chat by its ID and set it as the current chat"""
+    try:
+        # Get chat data - using ObjectId conversion
+        try:
+            obj_id = ObjectId(chat_id)
+            chat_data = get_chat_by_id(obj_id)
+        except:
+            chat_data = get_chat_by_id(chat_id)
+        
+        if chat_data is not None:
+            # Set as current chat
+            st.session_state.current_chat_id = chat_id
+            
+            # Load messages
+            if "messages" in chat_data and isinstance(chat_data["messages"], list):
+                st.session_state.messages = chat_data["messages"]
+            else:
+                st.session_state.messages = []
+            
+            return True
+        else:
+            st.sidebar.error(f"Could not find chat with ID: {chat_id}")
+    except Exception as e:
+        st.sidebar.error(f"Error loading chat: {str(e)}")
+        traceback.print_exc()
+    
+    return False
+
 # ✅ Sidebar UI (New Chat, Search, Language Selector)
-st.sidebar.title("Settings")
+st.sidebar.title("Archibus AI")
 
 # New Chat Button
 if st.sidebar.button("➕ New Chat", key="new_chat"):
-    try:
-        # Create new chat in MongoDB
-        new_chat_id = create_new_chat(title="New Chat")
-        if new_chat_id:
-            st.session_state.current_chat_id = new_chat_id
-            st.session_state.messages = []
-            st.rerun()
-    except Exception as e:
-        st.sidebar.error("Could not create new chat. Database connection issue.")
-
+    # For new chat, just clear the messages and reset current_chat_id
+    # Don't create a database entry until first message
+    st.session_state.messages = []
+    st.session_state.current_chat_id = None
+    st.rerun()
+        
 # Search functionality
-st.sidebar.markdown("## Search Conversations")
-search_query = st.sidebar.text_input("Search by topic:", key="search_input", value=st.session_state.search_query)
+search_query = st.sidebar.text_input("🔍 Search conversations", key="search_input", value=st.session_state.search_query)
 
 if search_query != st.session_state.search_query:
     st.session_state.search_query = search_query
-    st.rerun()  # Changed from st.experimental_rerun()
- 
+    st.rerun()
+    
 # Display Chat History
 st.sidebar.markdown("## Chat History")
 
-# Around line 143, modify the chat history display:
-# In the section where you display chat history (around line 147)
+# In the section where you display chat history
 filtered_chats = []
 
 try:
     if st.session_state.search_query:
         # Search and display results directly
         filtered_chats = search_chats(st.session_state.search_query)
-        if not filtered_chats:
+        if filtered_chats is None:
+            filtered_chats = []
+        if len(filtered_chats) == 0:
             st.sidebar.info(f"No results found for '{st.session_state.search_query}'")
+        else:
+            # Sort by updated_at date in descending order
+            filtered_chats = sorted(filtered_chats, 
+                                key=lambda x: x.get("updated_at", datetime.min), 
+                                reverse=True)
     else:
         # Display all chats when not searching
         filtered_chats = get_chat_list()
+        if filtered_chats is None:
+            filtered_chats = []
+        else:
+            # Sort by updated_at date in descending order
+            filtered_chats = sorted(filtered_chats, 
+                               key=lambda x: x.get("updated_at", datetime.min), 
+                               reverse=True)
 except Exception as e:
     st.sidebar.error(f"Could not load chat history. Database connection issue: {str(e)}")
-    
-    
+    filtered_chats = []
     
 # Group chats by date - only if we have chats
 today_chats = []
@@ -179,11 +240,19 @@ this_week_chats = []
 this_month_chats = []
 older_chats = []
 
-if filtered_chats:
+if filtered_chats and len(filtered_chats) > 0:
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     this_week = today - timedelta(days=7)
     this_month = today.replace(day=1)
+
+    # Sort the filtered chats by updated_at in descending order first
+    try:
+        filtered_chats = sorted(filtered_chats, 
+                               key=lambda x: x.get("updated_at", datetime.min), 
+                               reverse=True)
+    except Exception as e:
+        st.sidebar.warning(f"Error sorting chats: {str(e)}")
 
     for chat in filtered_chats:
         # Make sure we have updated_at field with proper date
@@ -204,33 +273,52 @@ if filtered_chats:
             # If no date or invalid date format, put in today's chats
             today_chats.append(chat)
 
-# Function to display chat items
+# ✅ Fixed render_chat_list function with direct chat loading
+# ✅ Enhanced render_chat_list function with better UI
 def render_chat_list(title, chats):
-    if chats:
-        st.sidebar.markdown(f"### {title}")
-        for chat in chats:
-            chat_id = str(chat["_id"])
-            chat_title = chat.get("title", "Untitled Chat")
-            
-            # Create a horizontal layout with columns
-            col1, col2 = st.sidebar.columns([4, 1])
-            
-            # Chat button in the first (wider) column
-            if col1.button(f"{chat_title}", key=f"chat_{chat_id}"):
-                chat_data = get_chat_by_id(chat_id)
-                if chat_data:
-                    st.session_state.current_chat_id = chat_id
-                    st.session_state.messages = chat_data.get("messages", [])
-                    st.rerun()
-            
-            # Delete button in the second (narrower) column
-            if col2.button("🗑️", key=f"delete_{chat_id}"):
-                if delete_chat(chat_id):
-                    # If the deleted chat was the current chat, clear the messages
-                    if st.session_state.current_chat_id == chat_id:
-                        st.session_state.current_chat_id = None
-                        st.session_state.messages = []
-                    st.rerun()
+    if chats and len(chats) > 0:
+        # Section header with better styling
+        st.sidebar.markdown(f"<div class='chat-section-header'>{title}</div>", unsafe_allow_html=True)
+        
+        # Create a container for this section
+        with st.sidebar.container():
+            for chat in chats:
+                chat_id = str(chat["_id"])
+                chat_title = chat.get("title", "Untitled Chat")
+                
+                # Check if this is the active chat
+                is_active = (st.session_state.current_chat_id == chat_id)
+                
+                # Create a chat container with conditional active class
+                chat_container_class = "chat-item active-chat" if is_active else "chat-item"
+                
+                # Create a horizontal layout with columns
+                col1, col2 = st.sidebar.columns([8, 1])
+                
+                # Chat button with styled title
+                with col1:
+                    if st.button(chat_title, key=f"chat_{chat_id}", use_container_width=True, 
+                              help="Click to open this chat", 
+                              type="secondary" if is_active else "primary"):
+                        # Set pending chat ID to avoid issues with Streamlit reruns
+                        st.session_state.pending_chat_id = chat_id
+                        st.rerun()
+                
+                # Delete button in the second column - smaller and more stylized
+                with col2:
+                    if st.button("🗑️", key=f"delete_{chat_id}", help="Delete this chat", 
+                              use_container_width=True, type="secondary"):
+                        if delete_chat(chat_id):
+                            if st.session_state.current_chat_id == chat_id:
+                                st.session_state.current_chat_id = None
+                                st.session_state.messages = []
+                            st.rerun()
+
+# Handle pending chat ID (if any)
+if st.session_state.pending_chat_id is not None:
+    chat_id = st.session_state.pending_chat_id
+    st.session_state.pending_chat_id = None  # Clear pending ID
+    load_chat_by_id(chat_id)
 
 # Display grouped chats
 render_chat_list("Today", today_chats)
@@ -243,6 +331,9 @@ render_chat_list("Older", older_chats)
 st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
 st.session_state.language = selected_language
+
+
+
 
 # ✅ Display Chat History
 def display_chat_history():
@@ -269,22 +360,47 @@ def display_chat_history():
 # ✅ Handle User Input and Display Steps + Images
 def handle_user_input(prompt):
     """Processes user input and retrieves AI response & multiple images in order."""
-    # Create new chat if needed
-    if not st.session_state.current_chat_id:
-        title = generate_title_from_prompt(prompt)
-        st.session_state.current_chat_id = create_new_chat(title=title)
-        if not st.session_state.current_chat_id:
-            st.error("Failed to create new chat. Database connection issue.")
-            return
-
-    # Add user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Create user message dict first
+    user_message = {"role": "user", "content": prompt}
+    
+    # Add user message to session state
+    st.session_state.messages.append(user_message)
+    
+    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
 
     # Generate and display assistant response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
+            # If this is the first message, create a new chat with title from prompt
+            if st.session_state.current_chat_id is None:
+                title = generate_title_from_prompt(prompt)
+                try:
+                    # Create new chat with title immediately
+                    new_chat_id = create_new_chat(title=title)
+                    if new_chat_id is not None:
+                        st.session_state.current_chat_id = new_chat_id
+                        # Force sidebar refresh to show new chat
+                        st.sidebar.success(f"Created new chat: {title}")
+                    else:
+                        st.error("Failed to create new chat. Database connection issue.")
+                        return
+                except Exception as e:
+                    st.error(f"Failed to create new chat: {str(e)}")
+                    return
+                
+                # Save first message after creating chat
+                if st.session_state.current_chat_id is not None:
+                    saved = save_message(st.session_state.current_chat_id, user_message)
+                    if not saved:
+                        st.error("Failed to save message to database.")
+            else:
+                # For existing chats, just save the message
+                saved = save_message(st.session_state.current_chat_id, user_message)
+                if not saved:
+                    st.error("Failed to save message to database.")
+
             # Get response and images
             response_text = generate_response(prompt, st.session_state.language)
             image_urls = find_relevant_images(prompt, top_k=5)
@@ -304,12 +420,18 @@ def handle_user_input(prompt):
             # Display current response with images
             for idx, section in enumerate(sections):
                 st.markdown(section)
-                if idx < len(image_urls):
+                if idx < len(image_urls) and image_urls[idx]:
                     st.image(image_urls[idx], caption=f"Related Image {idx+1}")
 
-            # Save to database
-            save_message(st.session_state.current_chat_id, response_message)
-
+            # Save assistant response to database
+            if st.session_state.current_chat_id is not None:
+                saved = save_message(st.session_state.current_chat_id, response_message)
+                if not saved:
+                    st.error("Failed to save response to database.")
+            
+            # Force rerun to update sidebar with new chat
+            st.rerun()
+            
 # ✅ Streamlit UI
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")

@@ -54,44 +54,88 @@ def delete_chat(chat_id):
     result = db.chats.delete_one({"_id": ObjectId(chat_id)})
     return result.deleted_count > 0
 
-def create_new_chat(title="Untitled Chat"):
-    """Create a new chat document in MongoDB."""
+def create_new_chat(title="New Chat"):
+    """Create a new chat with better error handling."""
     try:
         db = get_db()
-        chats_collection = db["chats"]
+        if db is None:
+            print("Database connection failed")
+            return None
+            
+        chats_collection = db['chats']
         
-        # Create a new chat with title and timestamp
+        # Create new chat document with empty messages array
         new_chat = {
             "title": title,
             "created_at": datetime.now(),
             "updated_at": datetime.now(),
-            "messages": []
+            "messages": []  # Make sure this is initialized as an empty array
         }
         
         result = chats_collection.insert_one(new_chat)
-        return str(result.inserted_id)
+        
+        if result.inserted_id:
+            print(f"Created new chat with ID: {result.inserted_id}")
+            return str(result.inserted_id)
+        else:
+            print("Failed to create new chat")
+            return None
+            
     except Exception as e:
-        print(f"Error creating new chat: {e}")
+        print(f"Error creating new chat: {str(e)}")
+        traceback.print_exc()
         return None
+    
 
-def save_message(chat_id: str, message: dict) -> bool:
-    """Save a message to an existing chat."""
+def save_message(chat_id, message):
+    """Save a message to the chat with better error handling and debugging."""
     try:
+        print(f"Saving message to chat ID: {chat_id}")
         db = get_db()
-        if not db:
+        
+        if db is None:
+            print("Database connection failed")
             return False
             
-        # Update chat with new message and timestamp
-        result = db.chats.update_one(
-            {"_id": ObjectId(chat_id)},
+        # Get the chats collection
+        chats_collection = db['chats']
+        
+        # Convert to ObjectId if needed
+        from bson.objectid import ObjectId
+        if isinstance(chat_id, str):
+            try:
+                chat_id = ObjectId(chat_id)
+            except Exception as e:
+                print(f"Invalid chat ID format: {str(e)}")
+                return False
+        
+        # Update the chat with the new message and timestamp
+        result = chats_collection.update_one(
+            {"_id": chat_id},
             {
                 "$push": {"messages": message},
                 "$set": {"updated_at": datetime.now()}
             }
         )
-        return result.modified_count > 0
+        
+        if result.modified_count > 0:
+            print(f"Message saved to chat {chat_id}")
+            return True
+        else:
+            print(f"Failed to save message - chat not found: {chat_id}")
+            
+            # Debug: Try to find the chat
+            chat = chats_collection.find_one({"_id": chat_id})
+            if chat:
+                print(f"Chat exists but update failed")
+            else:
+                print(f"No chat found with ID {chat_id}")
+                
+            return False
+    
     except Exception as e:
-        print(f"Error saving message: {e}")
+        print(f"Error saving message: {str(e)}")
+        traceback.print_exc()
         return False
 
 def get_chat_list():
@@ -107,12 +151,42 @@ def get_chat_list():
     }).sort("updated_at", -1))
 
 def get_chat_by_id(chat_id):
-    """Get a specific chat by ID"""
-    db = get_db()
-    if db is None:
-        return None
+    """Get a chat by its ID with debug information."""
+    try:
+        print(f"Attempting to find chat with ID: {chat_id}, type: {type(chat_id)}")
+        db = get_db()
+        if db is None:
+            print("Database connection failed")
+            return None
+            
+        chats_collection = db['chats']
         
-    return db.chats.find_one({"_id": ObjectId(chat_id)})
+        # Try with string ID first
+        chat = chats_collection.find_one({"_id": chat_id})
+        if chat:
+            print(f"Found chat using raw ID: {chat_id}")
+            return chat
+        
+        # Try with ObjectId
+        try:
+            from bson.objectid import ObjectId
+            obj_id = ObjectId(chat_id)
+            print(f"Converted to ObjectId: {obj_id}")
+            chat = chats_collection.find_one({"_id": obj_id})
+            if chat:
+                print(f"Found chat using ObjectId: {obj_id}")
+                return chat
+            else:
+                print(f"No chat found with ObjectId: {obj_id}")
+        except Exception as e:
+            print(f"Error with ObjectId conversion: {str(e)}")
+        
+        print(f"Chat not found with any method for ID: {chat_id}")
+        return None
+    except Exception as e:
+        print(f"Error in get_chat_by_id: {str(e)}")
+        return None
+    
 
 def search_chats(query):
     """Search for chats containing the query string in title only"""
