@@ -1,7 +1,7 @@
 import streamlit as st
 from chatbot.response_generator import generate_response
-from datetime import datetime, timedelta
 from chatbot.query_handler import find_relevant_images
+from datetime import datetime, timedelta
 from mongodb_utils import (
     create_new_chat, 
     save_message, 
@@ -11,7 +11,6 @@ from mongodb_utils import (
     delete_chat,
     get_db
 )
-
 
 st.set_page_config(page_title="Archibus AI", layout="wide")
 
@@ -245,77 +244,72 @@ st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
 st.session_state.language = selected_language
 
-
 # ✅ Display Chat History
 def display_chat_history():
-    """Displays past messages and retrieved images."""
+    """Displays past messages and retrieved images with proper section-image pairing."""
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if "image_urls" in message:
-                for img_url in message["image_urls"]:
-                    st.image(img_url, caption="Relevant Image")
+            if message["role"] == "assistant":
+                # Get content and images
+                content = message["content"]
+                image_urls = message.get("image_urls", [])
+                
+                # Split content into sections
+                sections = [s.strip() for s in content.split("\n\n") if s.strip()]
+                
+                # Display sections with their corresponding images
+                for idx, section in enumerate(sections):
+                    st.markdown(section)
+                    # Only display image if it exists for this section
+                    if idx < len(image_urls) and image_urls[idx]:
+                        st.image(image_urls[idx], caption=f"Related Image {idx+1}")
+            else:
+                st.markdown(message["content"])
 
-
-# ✅ Function to handle user input
+# ✅ Handle User Input and Display Steps + Images
 def handle_user_input(prompt):
     """Processes user input and retrieves AI response & multiple images in order."""
-    # Create new chat if no current chat is active
+    # Create new chat if needed
     if not st.session_state.current_chat_id:
-        # Generate title from first user prompt
         title = generate_title_from_prompt(prompt)
         st.session_state.current_chat_id = create_new_chat(title=title)
         if not st.session_state.current_chat_id:
             st.error("Failed to create new chat. Database connection issue.")
             return
-    
-    # Add user message to session state
+
+    # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    # Display the user message in the UI
     with st.chat_message("user"):
         st.markdown(prompt)
-    
-    # Save user message to MongoDB
-    save_message(st.session_state.current_chat_id, "user", prompt)
-    
+
+    # Generate and display assistant response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            # Generate response
+            # Get response and images
             response_text = generate_response(prompt, st.session_state.language)
-            
-            # Fetch images
             image_urls = find_relevant_images(prompt, top_k=5)
-            
-            # Fix for NoneType error - check if image_urls is None
-            image_urls = [url for url in image_urls if url] if image_urls is not None else []
-            
-            # Create response message
-            response_message = {"role": "assistant", "content": response_text}
-            if image_urls:
-                response_message["image_urls"] = list(dict.fromkeys(image_urls))  # Remove duplicates
-        
-            # Add assistant message to session state
+            image_urls = [url for url in image_urls if url]  # Remove empty URLs
+
+            # Split response into sections
+            sections = [s.strip() for s in response_text.split("\n\n") if s.strip()]
+
+            # Store the message
+            response_message = {
+                "role": "assistant",
+                "content": response_text,
+                "image_urls": image_urls
+            }
             st.session_state.messages.append(response_message)
-            
-            # Save assistant message to MongoDB
-            save_message(
-                st.session_state.current_chat_id, 
-                "assistant", 
-                response_text, 
-                image_urls=response_message.get("image_urls")
-            )
-            
-            # Display content sections with their associated images
-            st.markdown("### AI Response")
-            sections = response_text.split("\n\n")  # Split response into sections
-            
+
+            # Display current response with images
             for idx, section in enumerate(sections):
-                st.markdown(f"#### {section}")
+                st.markdown(section)
                 if idx < len(image_urls):
-                    st.image(image_urls[idx], caption=f"Relevant Image {idx+1}")
-            
-            
+                    st.image(image_urls[idx], caption=f"Related Image {idx+1}")
+
+            # Save to database
+            save_message(st.session_state.current_chat_id, response_message)
+
 # ✅ Streamlit UI
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")

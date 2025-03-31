@@ -74,33 +74,25 @@ def create_new_chat(title="Untitled Chat"):
         print(f"Error creating new chat: {e}")
         return None
 
-def save_message(chat_id, role, content, image_urls=None):
-    """Save a message to a specific chat"""
-    db = get_db()
-    if db is None:
-        return
-        
-    message = {
-        "role": role,
-        "content": content,
-        "timestamp": datetime.now()
-    }
-    
-    if image_urls:
-        message["image_urls"] = image_urls
-    
-    # Update message array
-    db.chats.update_one(
-        {"_id": ObjectId(chat_id)},
-        {
-            "$push": {"messages": message},
-            "$set": {
-                "updated_at": datetime.now(),
-                # Update title based on first user message if title is still "New Chat"
-                "title": content[:50] + "..." if role == "user" and db.chats.find_one({"_id": ObjectId(chat_id)})["title"] == "New Chat" else db.chats.find_one({"_id": ObjectId(chat_id)})["title"]
+def save_message(chat_id: str, message: dict) -> bool:
+    """Save a message to an existing chat."""
+    try:
+        db = get_db()
+        if not db:
+            return False
+            
+        # Update chat with new message and timestamp
+        result = db.chats.update_one(
+            {"_id": ObjectId(chat_id)},
+            {
+                "$push": {"messages": message},
+                "$set": {"updated_at": datetime.now()}
             }
-        }
-    )
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        print(f"Error saving message: {e}")
+        return False
 
 def get_chat_list():
     """Get list of all chats"""
