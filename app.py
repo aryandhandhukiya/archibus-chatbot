@@ -301,19 +301,6 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                 response_data = generate_response(prompt, st.session_state.language)
                 content = response_data["response"]
                 
-                # Display content
-                st.markdown(content)
-                
-                # Increment feedback key to force button refresh
-                st.session_state.feedback_key += 1
-                
-                # Add feedback buttons
-                col1, col2, col3 = st.columns([1, 6, 1])
-                with col1:
-                    thumbs_up = st.button("👍", key=f"thumbs_up_{st.session_state.feedback_key}")
-                with col3:
-                    thumbs_down = st.button("👎", key=f"thumbs_down_{st.session_state.feedback_key}")
-                
                 # Save message immediately if not regenerating
                 if not regenerate:
                     message_data = {
@@ -328,15 +315,26 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                         except Exception as e:
                             st.error(f"Error saving message: {str(e)}")
                 
+                # Display content after saving
+                st.markdown(content)
+                
+                # Increment feedback key to force button refresh
+                st.session_state.feedback_key += 1
+                
+                # Add feedback buttons
+                col1, col2, col3 = st.columns([1, 6, 1])
+                with col1:
+                    thumbs_up = st.button("👍", key=f"thumbs_up_{st.session_state.feedback_key}")
+                with col3:
+                    thumbs_down = st.button("👎", key=f"thumbs_down_{st.session_state.feedback_key}")
+                
                 # Handle thumbs down regeneration
                 if thumbs_down:
-                    # Only remove and regenerate the current response
                     if message_index is not None:
-                        # Remove only the specific message being regenerated
                         st.session_state.messages.pop(message_index)
                         st.session_state.needs_regeneration = True
                         st.session_state.regeneration_prompt = prompt
-                        st.session_state.regeneration_index = message_index - 1  # Index of the user message
+                        st.session_state.regeneration_index = message_index
                         st.rerun()
                     
         except Exception as e:

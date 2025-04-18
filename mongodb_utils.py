@@ -40,11 +40,24 @@ def get_mongo_client():
     return st.session_state.mongo_client
 
 def get_db():
-    """Get database instance"""
-    client = get_mongo_client()
-    if client:
-        return client.archibus_chatbot
-    return None
+    """Get database connection."""
+    try:
+        if hasattr(get_db, 'db'):
+            return get_db.db
+            
+        client = MongoClient('mongodb://localhost:27017/')
+        db = client.archibus_ai
+        
+        # Test connection
+        db.command('ping')
+        
+        # Cache the connection
+        get_db.db = db
+        return db
+        
+    except Exception as e:
+        print(f"Error connecting to database: {str(e)}")
+        return None
 
 def delete_chat(chat_id):
     """Delete a chat by ID"""
@@ -92,35 +105,42 @@ def save_message(chat_id: str, message: dict) -> bool:
     try:
         print(f"Saving message to chat ID: {chat_id}")
         db = get_db()
-        if not db:
+        
+        # Proper database connection check
+        if db is None:
+            print("Database connection failed")
             return False
             
-        # Update chat with new message and timestamp
+        # Convert string ID to ObjectId
+        chat_id_obj = ObjectId(chat_id)
+        print(f"Converted to ObjectId: {chat_id_obj}")
+        
+        # Verify chat exists before updating
+        chat = db.chats.find_one({"_id": chat_id_obj})
+        if not chat:
+            print(f"Chat not found with ID: {chat_id}")
+            return False
+        
+        print(f"Found chat using ObjectId: {chat_id_obj}")
+        
+        # Update chat with new message
         result = db.chats.update_one(
-            {"_id": ObjectId(chat_id)},
+            {"_id": chat_id_obj},
             {
-                "$push": {"messages": message},  # Use message instead of message_data
+                "$push": {"messages": message},
                 "$set": {"updated_at": datetime.now()}
             }
         )
         
         if result.modified_count > 0:
-            print(f"Message saved to chat {chat_id}")
+            print(f"Successfully saved message to chat {chat_id}")
             return True
         else:
-            print(f"Failed to save message - chat not found: {chat_id}")
-            
-            # Debug: Try to find the chat
-            chat = db.chats.find_one({"_id": ObjectId(chat_id)})  # Use db.chats instead of chats_collection
-            if chat:
-                print(f"Chat exists but update failed")
-            else:
-                print(f"No chat found with ID {chat_id}")
-                
+            print("Update operation did not modify any documents")
             return False
-    
+            
     except Exception as e:
-        print(f"Error saving message: {e}")
+        print(f"Error saving message: {str(e)}")
         return False
 
 def get_chat_list():
