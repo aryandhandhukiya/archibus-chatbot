@@ -74,24 +74,28 @@ def create_new_chat(title="Untitled Chat"):
         print(f"Error creating new chat: {e}")
         return None
 
-def save_message(chat_id: str, message: dict) -> bool:
-    """Save a message to an existing chat."""
+def save_message(chat_id, message_data):
+    """Save message with proper None checking."""
+    if chat_id is None:
+        print("Error: chat_id is None")
+        return False
+        
     try:
         db = get_db()
-        if not db:
+        if db is None:
+            print("Error: Database connection not available")
             return False
             
-        # Update chat with new message and timestamp
         result = db.chats.update_one(
-            {"_id": ObjectId(chat_id)},
+            {"_id": chat_id},
             {
-                "$push": {"messages": message},
+                "$push": {"messages": message_data},
                 "$set": {"updated_at": datetime.now()}
             }
         )
         return result.modified_count > 0
     except Exception as e:
-        print(f"Error saving message: {e}")
+        print(f"Error saving message: {str(e)}")
         return False
 
 def get_chat_list():
