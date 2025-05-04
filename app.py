@@ -37,6 +37,8 @@ if "needs_regeneration" not in st.session_state:
     st.session_state.needs_regeneration = False
 if "regeneration_prompt" not in st.session_state:
     st.session_state.regeneration_prompt = None
+if "regeneration_index" not in st.session_state:
+    st.session_state.regeneration_index = None
 
 # ✅ Custom Navbar and Styling
 st.markdown(
@@ -170,7 +172,7 @@ if search_query != st.session_state.search_query:
     st.session_state.search_query = search_query
     st.rerun()
 
-# Display Chat History
+# Display Chat History in Sidebar
 st.sidebar.markdown("## Chat History")
 filtered_chats = []
 
@@ -213,7 +215,7 @@ if filtered_chats:
         else:
             today_chats.append(chat)
 
-# Function to display chat items
+# Function to display chat items in sidebar
 def render_chat_list(title, chats):
     if chats:
         st.sidebar.markdown(f"### {title}")
@@ -237,7 +239,7 @@ def render_chat_list(title, chats):
                         st.session_state.messages = []
                     st.rerun()
 
-# Display grouped chats
+# Display grouped chats in sidebar
 render_chat_list("Today", today_chats)
 render_chat_list("Yesterday", yesterday_chats)
 render_chat_list("This Week", this_week_chats)
@@ -249,35 +251,43 @@ st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
 st.session_state.language = selected_language
 
-# ✅ Display Chat History
+# ✅ Display Chat History in Main Area
 def display_chat_history():
     """Displays past messages with feedback buttons."""
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            
             if message["role"] == "assistant":
-                content = message["content"]
-                st.markdown(content)
-                
                 # Add feedback buttons for assistant messages
                 col1, col2, col3 = st.columns([1, 6, 1])
                 with col1:
-                    thumbs_up = st.button("👍", key=f"history_thumbs_up_{idx}")
+                    if st.button("👍", key=f"history_thumbs_up_{idx}"):
+                        pass  # Handle thumbs-up if needed
                 with col3:
-                    thumbs_down = st.button("👎", key=f"history_thumbs_down_{idx}")
-                
-                if thumbs_down:
-                    # Get corresponding user message
-                    user_idx = idx - 1 if idx > 0 else None
-                    if user_idx is not None and user_idx < len(st.session_state.messages):
-                        user_msg = st.session_state.messages[user_idx]["content"]
-                        # Set regeneration for specific message
-                        st.session_state.needs_regeneration = True
-                        st.session_state.regeneration_prompt = user_msg
-                        st.session_state.regeneration_index = idx
-                        st.session_state.messages.pop(idx)  # Remove only this response
-                        st.rerun()
-            else:
-                st.markdown(message["content"])
+                    if st.button("👎", key=f"history_thumbs_down_{idx}"):
+                        # Get corresponding user message
+                        user_idx = idx - 1 if idx > 0 else None
+                        if user_idx is not None and user_idx < len(st.session_state.messages):
+                            user_msg = st.session_state.messages[user_idx]["content"]
+                            # Set regeneration parameters
+                            st.session_state.needs_regeneration = True
+                            st.session_state.regeneration_prompt = user_msg
+                            st.session_state.regeneration_index = idx
+                            # Remove the assistant message
+                            st.session_state.messages.pop(idx)
+                            # Update the database to remove the old assistant message
+                            if st.session_state.current_chat_id:
+                                try:
+                                    db = get_db()
+                                    chat_collection = db["chats"]
+                                    chat_collection.update_one(
+                                        {"_id": st.session_state.current_chat_id},
+                                        {"$set": {"messages": st.session_state.messages}}
+                                    )
+                                except Exception as e:
+                                    st.error(f"Error updating chat history: {str(e)}")
+                            st.rerun()
 
 # ✅ Handle User Input and Display Steps + Images
 def handle_user_input(prompt, regenerate=False, message_index=None):
@@ -291,31 +301,50 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                 return
             st.session_state.current_chat_id = new_chat_id
 
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
+        # Append user message only if it doesn't already exist
+        if not any(msg["role"] == "user" and msg["content"] == prompt for msg in st.session_state.messages):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            # Display user message immediately
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            # Save user message to database
+            if st.session_state.current_chat_id:
+                try:
+                    save_message(st.session_state.current_chat_id, {"role": "user", "content": prompt})
+                except Exception as e:
+                    st.error(f"Error saving user message: {str(e)}")
+    
+    # Generate and display assistant response
     with st.chat_message("assistant"):
         try:
             with st.spinner("Thinking..." if not regenerate else "Regenerating response..."):
                 response_data = generate_response(prompt, st.session_state.language)
                 content = response_data["response"]
                 
-                # Save message immediately if not regenerating
-                if not regenerate:
-                    message_data = {
-                        "role": "assistant",
-                        "content": content
-                    }
-                    
-                    if st.session_state.current_chat_id:
-                        try:
-                            save_message(st.session_state.current_chat_id, message_data)
-                            st.session_state.messages.append(message_data)
-                        except Exception as e:
-                            st.error(f"Error saving message: {str(e)}")
+                # Prepare message data
+                message_data = {
+                    "role": "assistant",
+                    "content": content
+                }
                 
-                # Display content after saving
+                # Append or update message in session state
+                if not regenerate or message_index is None:
+                    st.session_state.messages.append(message_data)
+                else:
+                    # Ensure index is valid and replace the old assistant message
+                    if 0 <= message_index < len(st.session_state.messages):
+                        st.session_state.messages[message_index] = message_data
+                    else:
+                        st.session_state.messages.append(message_data)
+                
+                # Save assistant message to database
+                if st.session_state.current_chat_id:
+                    try:
+                        save_message(st.session_state.current_chat_id, message_data)
+                    except Exception as e:
+                        st.error(f"Error saving assistant message: {str(e)}")
+                
+                # Display content
                 st.markdown(content)
                 
                 # Increment feedback key to force button refresh
@@ -324,17 +353,29 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                 # Add feedback buttons
                 col1, col2, col3 = st.columns([1, 6, 1])
                 with col1:
-                    thumbs_up = st.button("👍", key=f"thumbs_up_{st.session_state.feedback_key}")
+                    if st.button("👍", key=f"thumbs_up_{st.session_state.feedback_key}"):
+                        pass  # Handle thumbs-up if needed
                 with col3:
-                    thumbs_down = st.button("👎", key=f"thumbs_down_{st.session_state.feedback_key}")
-                
-                # Handle thumbs down regeneration
-                if thumbs_down:
-                    if message_index is not None:
-                        st.session_state.messages.pop(message_index)
+                    if st.button("👎", key=f"thumbs_down_{st.session_state.feedback_key}"):
+                        # Find new index of this assistant message
+                        new_index = len(st.session_state.messages) - 1
+                        # Set regeneration parameters
                         st.session_state.needs_regeneration = True
                         st.session_state.regeneration_prompt = prompt
-                        st.session_state.regeneration_index = message_index
+                        st.session_state.regeneration_index = new_index
+                        # Remove the assistant message
+                        st.session_state.messages.pop(new_index)
+                        # Update the database to remove the old assistant message
+                        if st.session_state.current_chat_id:
+                            try:
+                                db = get_db()
+                                chat_collection = db["chats"]
+                                chat_collection.update_one(
+                                    {"_id": st.session_state.current_chat_id},
+                                    {"$set": {"messages": st.session_state.messages}}
+                                )
+                            except Exception as e:
+                                st.error(f"Error updating chat history: {str(e)}")
                         st.rerun()
                     
         except Exception as e:
@@ -344,18 +385,21 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")
 
-# Handle regeneration before displaying chat history
+# Display chat history immediately
+display_chat_history()
+
+# Handle regeneration
 if st.session_state.needs_regeneration and st.session_state.regeneration_prompt:
     handle_user_input(
-        st.session_state.regeneration_prompt, 
+        st.session_state.regeneration_prompt,
         regenerate=True,
         message_index=st.session_state.regeneration_index
     )
     st.session_state.needs_regeneration = False
     st.session_state.regeneration_prompt = None
     st.session_state.regeneration_index = None
-else:
-    display_chat_history()
 
+# Handle new user input
 if prompt := st.chat_input("Ask me anything..."):
     handle_user_input(prompt)
+    st.rerun()  # Force a rerun to ensure chat history updates immediately
