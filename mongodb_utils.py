@@ -45,7 +45,7 @@ def get_db():
         if hasattr(get_db, 'db'):
             return get_db.db
             
-        client = MongoClient('mongodb://localhost:27017/')
+        client = MongoClient('mongodb+srv://dhandhukiyaaryan05:7tLj34bA6Mvhz7Si@archibusai.swciluy.mongodb.net/')
         db = client.archibus_ai
         
         # Test connection
