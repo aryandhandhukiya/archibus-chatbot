@@ -14,10 +14,158 @@ import base64
 from io import BytesIO
 from PIL import Image
 import re
+import json
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+import os
+
+# Load precomputed embeddings and index
+# EMBEDDINGS_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\text_embeddings.npy"
+# INDEX_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\text_index.faiss"
+# METADATA_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\metadata.json"
+
+EMBEDDINGS_PATH = "pdf-embeddings/text_embeddings.npy"
+INDEX_PATH = "pdf-embeddings/text_index.faiss"
+METADATA_PATH = "pdf-embeddings/metadata.json"
+
+# Load the precomputed data
+text_embeddings = np.load(EMBEDDINGS_PATH)
+text_index = faiss.read_index(INDEX_PATH)
+with open(METADATA_PATH, "r") as f:
+    metadata = json.load(f)
+texts = metadata["texts"]
+dataset = metadata["dataset"]
+
+# Initialize text embedder for embedding step text
+text_embedder = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Function to dynamically split the text response into steps, intro, and conclusion
+def split_response_into_steps(text_response):
+    numbered_pattern = r'(\d+\.\s|\d+\)\s)'
+    transitional_phrases = [
+        r'First(?:,|\b)',
+        r'Next(?:,|\b)',
+        r'After that(?:,|\b)',
+        r'Now(?:,|\b)',
+        r'Finally(?:,|\b)',
+        r'Step\s+\d+(?:,|\b)'
+    ]
+    transitional_pattern = '|'.join(transitional_phrases)
+    step_pattern = f'({numbered_pattern}|{transitional_pattern})'
+    conclusion_pattern = r'(Conclusion:|In conclusion,).*$'
+
+    # Extract conclusion
+    conclusion_match = re.search(conclusion_pattern, text_response, re.IGNORECASE | re.DOTALL)
+    conclusion_text = conclusion_match.group(0).strip() if conclusion_match else ""
+    if conclusion_match:
+        text_response = text_response[:conclusion_match.start()].strip()
+
+    # Find all matches of step markers
+    matches = list(re.finditer(step_pattern, text_response, re.IGNORECASE))
+    
+    if not matches:
+        return text_response.strip(), [("Full Response", text_response.strip())], conclusion_text
+
+    # Extract the introductory text (before the first step)
+    intro_text = text_response[:matches[0].start()].strip()
+
+    # Split the response into steps based on matches
+    steps = []
+    step_dict = {}  # To track steps by name and merge duplicates
+    for i, match in enumerate(matches):
+        start_pos = match.start()
+        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text_response)
+        step_text = text_response[start_pos:end_pos].strip()
+        step_name = match.group().strip()
+        if step_name.endswith(","):
+            step_name = step_name[:-1]
+
+        # Normalize step name for deduplication (case-insensitive)
+        step_name_key = step_name.lower()
+        if step_name_key in step_dict:
+            # Merge the step text with the existing step
+            step_dict[step_name_key]["text"] += "\n" + step_text
+        else:
+            step_dict[step_name_key] = {"name": step_name, "text": step_text}
+
+    # Convert the dictionary to a list of tuples, ensuring sequential numbering
+    step_counter = 1
+    for step_key, step_data in sorted(step_dict.items(), key=lambda x: matches[list(step_dict.keys()).index(x[0])].start()):
+        step_name = step_data["name"]
+        # If the step name is a number (e.g., "1."), use it; otherwise, use the counter
+        if re.match(r'^\d+\.\s', step_name):
+            steps.append((step_name, step_data["text"]))
+        else:
+            steps.append((f"{step_counter}.", step_data["text"]))
+            step_counter += 1
+    
+    return intro_text, steps, conclusion_text
+
+# Function to resize image to a fixed width while maintaining aspect ratio
+def resize_image(image, target_width=600):
+    original_width, original_height = image.size
+    aspect_ratio = original_height / original_width
+    target_height = int(target_width * aspect_ratio)
+    return image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+# Function to find images based on step text, default to 1 image per step
+def find_images_for_step(step_text, used_images, k=3, max_images=1):
+    step_embedding = text_embedder.encode([step_text], convert_to_numpy=True)
+    D, I = text_index.search(step_embedding, k=k)
+    
+    matching_images = []
+    for idx in I[0]:
+        page_data = dataset[idx]
+        page_number = page_data["page_number"]
+        images = page_data["images"]
+        
+        for img_path in images:
+            img_filename = os.path.basename(img_path)
+            try:
+                img_number = int(img_filename.split("_")[-1].replace(".png", ""))
+                image_key = (page_number, img_number)
+                if image_key not in used_images:
+                    used_images.add(image_key)
+                    matching_images.append((page_number, img_number, img_path))
+                    if len(matching_images) >= max_images:
+                        break
+            except (IndexError, ValueError) as e:
+                st.error(f"Error parsing image path {img_path}: {e}")
+                continue
+        if len(matching_images) >= max_images:
+            break
+    
+    # Fallback: If no images are found, search again with a broader query
+    if len(matching_images) < max_images:
+        simplified_text = " ".join(step_text.split()[:5])  # Use first 5 words
+        step_embedding = text_embedder.encode([simplified_text], convert_to_numpy=True)
+        D, I = text_index.search(step_embedding, k=k)
+        for idx in I[0]:
+            page_data = dataset[idx]
+            page_number = page_data["page_number"]
+            images = page_data["images"]
+            for img_path in images:
+                img_filename = os.path.basename(img_path)
+                try:
+                    img_number = int(img_filename.split("_")[-1].replace(".png", ""))
+                    image_key = (page_number, img_number)
+                    if image_key not in used_images:
+                        used_images.add(image_key)
+                        matching_images.append((page_number, img_number, img_path))
+                        if len(matching_images) >= max_images:
+                            break
+                except (IndexError, ValueError) as e:
+                    st.error(f"Error parsing image path {img_path}: {e}")
+                    continue
+            if len(matching_images) >= max_images:
+                break
+    
+    return matching_images[:max_images]
 
 st.set_page_config(page_title="Archibus AI", layout="wide")
 
-# ✅ Ensure Session State Variables Exist
+# Ensure Session State Variables Exist
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -40,7 +188,7 @@ if "regeneration_prompt" not in st.session_state:
 if "regeneration_index" not in st.session_state:
     st.session_state.regeneration_index = None
 
-# ✅ Custom Navbar and Styling
+# Custom Navbar and Styling
 st.markdown(
     """
     <style>
@@ -140,9 +288,8 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ✅ Function to create a title from prompt
+# Function to create a title from prompt
 def generate_title_from_prompt(prompt, max_length=30):
-    """Generate a title from the user prompt."""
     clean_prompt = ' '.join(prompt.split())
     if len(clean_prompt) > max_length:
         title = clean_prompt[:max_length] + "..."
@@ -150,10 +297,9 @@ def generate_title_from_prompt(prompt, max_length=30):
         title = clean_prompt
     return title
 
-# ✅ Sidebar UI (New Chat, Search, Language Selector)
+# Sidebar UI (New Chat, Search, Language Selector)
 st.sidebar.title("Settings")
 
-# New Chat Button
 if st.sidebar.button("➕ New Chat", key="new_chat"):
     try:
         new_chat_id = create_new_chat(title="New Chat")
@@ -164,7 +310,6 @@ if st.sidebar.button("➕ New Chat", key="new_chat"):
     except Exception as e:
         st.sidebar.error(f"Could not create new chat: {str(e)}")
 
-# Search functionality
 st.sidebar.markdown("## Search Conversations")
 search_query = st.sidebar.text_input("Search by topic:", key="search_input", value=st.session_state.search_query)
 
@@ -172,7 +317,6 @@ if search_query != st.session_state.search_query:
     st.session_state.search_query = search_query
     st.rerun()
 
-# Display Chat History in Sidebar
 st.sidebar.markdown("## Chat History")
 filtered_chats = []
 
@@ -186,7 +330,6 @@ try:
 except Exception as e:
     st.sidebar.error(f"Could not load chat history: {str(e)}")
 
-# Group chats by date
 today_chats = []
 yesterday_chats = []
 this_week_chats = []
@@ -215,7 +358,6 @@ if filtered_chats:
         else:
             today_chats.append(chat)
 
-# Function to display chat items in sidebar
 def render_chat_list(title, chats):
     if chats:
         st.sidebar.markdown(f"### {title}")
@@ -239,44 +381,67 @@ def render_chat_list(title, chats):
                         st.session_state.messages = []
                     st.rerun()
 
-# Display grouped chats in sidebar
 render_chat_list("Today", today_chats)
 render_chat_list("Yesterday", yesterday_chats)
 render_chat_list("This Week", this_week_chats)
 render_chat_list("This Month", this_month_chats)
 render_chat_list("Older", older_chats)
 
-# Language selection
 st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
 st.session_state.language = selected_language
 
-# ✅ Display Chat History in Main Area
+# Display Chat History in Main Area
 def display_chat_history():
-    """Displays past messages with feedback buttons."""
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+            content = message.get("content", "")
+            if message["role"] == "assistant" and "steps" in message:
+                # Extract components
+                intro_text = message.get("intro_text", "")
+                steps = message.get("steps", [])
+                conclusion_text = message.get("conclusion_text", "")
+                
+                # Display introductory text
+                if intro_text:
+                    st.markdown(intro_text)
+                
+                # Display steps with images
+                for step_name, step_text in steps:
+                    with st.container():
+                        st.markdown(f"**Step: {step_name}**")
+                        st.markdown(step_text)
+                        if step_name in message.get("step_images", {}) and message["step_images"][step_name]:
+                            for page_num, img_num, img_path in message["step_images"][step_name]:
+                                try:
+                                    image = Image.open(img_path)
+                                    resized_image = resize_image(image, target_width=600)
+                                    caption = f"Page {page_num}, Image {img_num}"
+                                    st.image(resized_image, caption=caption, use_container_width=True)
+                                except Exception as e:
+                                    st.error(f"Error loading image {img_path}: {str(e)}")
+                
+                # Display conclusion (no images)
+                if conclusion_text:
+                    st.markdown("### Conclusion")
+                    st.markdown(conclusion_text)
+            else:
+                st.markdown(content)
             
             if message["role"] == "assistant":
-                # Add feedback buttons for assistant messages
                 col1, col2, col3 = st.columns([1, 6, 1])
                 with col1:
                     if st.button("👍", key=f"history_thumbs_up_{idx}"):
-                        pass  # Handle thumbs-up if needed
+                        pass
                 with col3:
                     if st.button("👎", key=f"history_thumbs_down_{idx}"):
-                        # Get corresponding user message
                         user_idx = idx - 1 if idx > 0 else None
                         if user_idx is not None and user_idx < len(st.session_state.messages):
                             user_msg = st.session_state.messages[user_idx]["content"]
-                            # Set regeneration parameters
                             st.session_state.needs_regeneration = True
                             st.session_state.regeneration_prompt = user_msg
                             st.session_state.regeneration_index = idx
-                            # Remove the assistant message
                             st.session_state.messages.pop(idx)
-                            # Update the database to remove the old assistant message
                             if st.session_state.current_chat_id:
                                 try:
                                     db = get_db()
@@ -289,9 +454,8 @@ def display_chat_history():
                                     st.error(f"Error updating chat history: {str(e)}")
                             st.rerun()
 
-# ✅ Handle User Input and Display Steps + Images
+# Handle User Input and Display Steps + Images
 def handle_user_input(prompt, regenerate=False, message_index=None):
-    """Process user input and display text response with feedback."""
     if not regenerate:
         if not st.session_state.current_chat_id:
             title = generate_title_from_prompt(prompt)
@@ -301,37 +465,46 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                 return
             st.session_state.current_chat_id = new_chat_id
 
-        # Append user message only if it doesn't already exist
         if not any(msg["role"] == "user" and msg["content"] == prompt for msg in st.session_state.messages):
             st.session_state.messages.append({"role": "user", "content": prompt})
-            # Display user message immediately
             with st.chat_message("user"):
                 st.markdown(prompt)
-            # Save user message to database
             if st.session_state.current_chat_id:
                 try:
                     save_message(st.session_state.current_chat_id, {"role": "user", "content": prompt})
                 except Exception as e:
                     st.error(f"Error saving user message: {str(e)}")
     
-    # Generate and display assistant response
     with st.chat_message("assistant"):
         try:
             with st.spinner("Thinking..." if not regenerate else "Regenerating response..."):
                 response_data = generate_response(prompt, st.session_state.language)
                 content = response_data["response"]
                 
-                # Prepare message data
+                # Split the response into introductory text, steps, and conclusion
+                intro_text, steps, conclusion_text = split_response_into_steps(content)
+                
+                # Find images for each step, default to 1 image
+                step_images = {}
+                used_images = set()
+                for step_name, step_text in steps:
+                    matching_images = find_images_for_step(step_text, used_images, k=3, max_images=1)
+                    step_images[step_name] = matching_images
+                
+                # Prepare message data with steps and images
                 message_data = {
                     "role": "assistant",
-                    "content": content
+                    "content": content,
+                    "intro_text": intro_text,
+                    "steps": steps,
+                    "conclusion_text": conclusion_text,
+                    "step_images": step_images
                 }
                 
                 # Append or update message in session state
                 if not regenerate or message_index is None:
                     st.session_state.messages.append(message_data)
                 else:
-                    # Ensure index is valid and replace the old assistant message
                     if 0 <= message_index < len(st.session_state.messages):
                         st.session_state.messages[message_index] = message_data
                     else:
@@ -344,28 +517,42 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                     except Exception as e:
                         st.error(f"Error saving assistant message: {str(e)}")
                 
-                # Display content
-                st.markdown(content)
+                # Display the introductory text (if any)
+                if intro_text:
+                    st.markdown(intro_text)
                 
-                # Increment feedback key to force button refresh
+                # Display steps with images
+                for step_name, step_text in steps:
+                    with st.container():
+                        st.markdown(f"**Step: {step_name}**")
+                        st.markdown(step_text)
+                        if step_name in step_images and step_images[step_name]:
+                            for page_num, img_num, img_path in step_images[step_name]:
+                                try:
+                                    image = Image.open(img_path)
+                                    resized_image = resize_image(image, target_width=600)
+                                    caption = f"Page {page_num}, Image {img_num}"
+                                    st.image(resized_image, caption=caption, use_container_width=True)
+                                except Exception as e:
+                                    st.error(f"Error loading image {img_path}: {str(e)}")
+                
+                # Display conclusion (no images)
+                if conclusion_text:
+                    st.markdown("### Conclusion")
+                    st.markdown(conclusion_text)
+                
                 st.session_state.feedback_key += 1
-                
-                # Add feedback buttons
                 col1, col2, col3 = st.columns([1, 6, 1])
                 with col1:
                     if st.button("👍", key=f"thumbs_up_{st.session_state.feedback_key}"):
-                        pass  # Handle thumbs-up if needed
+                        pass
                 with col3:
                     if st.button("👎", key=f"thumbs_down_{st.session_state.feedback_key}"):
-                        # Find new index of this assistant message
                         new_index = len(st.session_state.messages) - 1
-                        # Set regeneration parameters
                         st.session_state.needs_regeneration = True
                         st.session_state.regeneration_prompt = prompt
                         st.session_state.regeneration_index = new_index
-                        # Remove the assistant message
                         st.session_state.messages.pop(new_index)
-                        # Update the database to remove the old assistant message
                         if st.session_state.current_chat_id:
                             try:
                                 db = get_db()
@@ -381,14 +568,12 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
         except Exception as e:
             st.error(f"Error processing response: {str(e)}")
 
-# ✅ Streamlit UI
+# Streamlit UI
 st.title("Archibus AI")
 st.markdown("Welcome to Archibus AI")
 
-# Display chat history immediately
 display_chat_history()
 
-# Handle regeneration
 if st.session_state.needs_regeneration and st.session_state.regeneration_prompt:
     handle_user_input(
         st.session_state.regeneration_prompt,
@@ -399,7 +584,6 @@ if st.session_state.needs_regeneration and st.session_state.regeneration_prompt:
     st.session_state.regeneration_prompt = None
     st.session_state.regeneration_index = None
 
-# Handle new user input
 if prompt := st.chat_input("Ask me anything..."):
     handle_user_input(prompt)
-    st.rerun()  # Force a rerun to ensure chat history updates immediately
+    st.rerun()

@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 # Load ChromaDB with error handling
 try:
-    # Use relative path for better cross-platform compatibility
     db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
                           "Extractor", "s3_upload", "chromadb")
     logger.info(f"Using ChromaDB path: {db_path}")
@@ -33,15 +32,17 @@ except Exception as e:
     logger.error(f"Error loading embedding model: {str(e)}")
     embed_model = None
 
+# Function to extract step number from metadata
 def extract_step_number(metadata):
     """Extracts step number from metadata if present, else return a large number."""
     try:
         match = re.search(r"step\s*(\d+)", metadata.get("description", ""), re.IGNORECASE)
-        return int(match.group(1)) if match else 999  # Default large number for unordered images
+        return int(match.group(1)) if match else 999
     except Exception as e:
         logger.error(f"Error extracting step number: {str(e)}")
         return 999
 
+# Function to score image relevance based on semantic similarity
 def score_image_relevance(image_desc, requirement, embed_model):
     """Score image relevance using semantic similarity (0-10 scale)"""
     try:
