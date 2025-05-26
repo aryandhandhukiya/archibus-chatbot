@@ -19,6 +19,7 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 import os
+import requests
 
 # Load precomputed embeddings and index
 # EMBEDDINGS_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\text_embeddings.npy"
@@ -32,7 +33,7 @@ METADATA_PATH = "pdf-embeddings/metadata.json"
 # Load the precomputed data
 text_embeddings = np.load(EMBEDDINGS_PATH)
 text_index = faiss.read_index(INDEX_PATH)
-with open(METADATA_PATH, "r") as f:
+with open(METADATA_PATH, "r", encoding="utf-8") as f:
     metadata = json.load(f)
 texts = metadata["texts"]
 dataset = metadata["dataset"]
@@ -102,12 +103,63 @@ def split_response_into_steps(text_response):
     
     return intro_text, steps, conclusion_text
 
-# Function to resize image to a fixed width while maintaining aspect ratio
-def resize_image(image, target_width=600):
+# Function to resize and crop image to a fixed size (600px x 400px)
+def resize_image(image, target_width=600, target_height=400):
+    # Step 1: Resize the image to fit within the target dimensions while maintaining aspect ratio
     original_width, original_height = image.size
-    aspect_ratio = original_height / original_width
-    target_height = int(target_width * aspect_ratio)
-    return image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+    target_aspect = target_width / target_height
+    original_aspect = original_width / original_height
+
+    if original_aspect > target_aspect:
+        # Image is wider than target aspect ratio: fit height, crop width
+        new_height = target_height
+        new_width = int(new_height * original_aspect)
+        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # Crop the width to fit target_width
+        left = (new_width - target_width) // 2
+        image = image.crop((left, 0, left + target_width, target_height))
+    else:
+        # Image is taller than target aspect ratio: fit width, crop height
+        new_width = target_width
+        new_height = int(new_width / original_aspect)
+        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # Crop the height to fit target_height
+        top = (new_height - target_height) // 2
+        image = image.crop((0, top, target_width, top + target_height))
+    
+    return image
+
+# Function to load an image from an S3 URL with detailed error handling
+def load_image_from_url(url):
+    try:
+        # Verify that the URL is a string and starts with http/https
+        if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+            raise ValueError(f"Invalid URL format: {url}")
+
+        # Fetch the image from the URL
+        response = requests.get(url, stream=True, timeout=10)
+        response.raise_for_status()  # Raise an error for bad status codes (e.g., 403, 404)
+
+        # Load the image data into a BytesIO object
+        image_data = BytesIO(response.content)
+
+        # Open the image with PIL
+        image = Image.open(image_data)
+        
+        # Verify that the image is valid by accessing its size
+        image.size  # This will raise an error if the image is corrupt
+        
+        return image
+
+    except requests.exceptions.RequestException as e:
+        # Handle network-related errors (e.g., 403 Forbidden, 404 Not Found, timeout)
+        raise Exception(f"Network error while fetching image from {url}: {str(e)}")
+    except ValueError as e:
+        # Handle invalid URL format
+        raise Exception(str(e))
+    except Exception as e:
+        # Handle other errors (e.g., corrupt image, PIL errors)
+        raise Exception(f"Error processing image from {url}: {str(e)}")
 
 # Function to find images based on step text, default to 1 image per step
 def find_images_for_step(step_text, used_images, k=3, max_images=1):
@@ -120,18 +172,18 @@ def find_images_for_step(step_text, used_images, k=3, max_images=1):
         page_number = page_data["page_number"]
         images = page_data["images"]
         
-        for img_path in images:
-            img_filename = os.path.basename(img_path)
+        for img_url in images:  # Images are S3 URLs
+            img_filename = os.path.basename(img_url)
             try:
                 img_number = int(img_filename.split("_")[-1].replace(".png", ""))
                 image_key = (page_number, img_number)
                 if image_key not in used_images:
                     used_images.add(image_key)
-                    matching_images.append((page_number, img_number, img_path))
+                    matching_images.append((page_number, img_number, img_url))
                     if len(matching_images) >= max_images:
                         break
             except (IndexError, ValueError) as e:
-                st.error(f"Error parsing image path {img_path}: {e}")
+                st.error(f"Error parsing image URL {img_url}: {e}")
                 continue
         if len(matching_images) >= max_images:
             break
@@ -145,18 +197,18 @@ def find_images_for_step(step_text, used_images, k=3, max_images=1):
             page_data = dataset[idx]
             page_number = page_data["page_number"]
             images = page_data["images"]
-            for img_path in images:
-                img_filename = os.path.basename(img_path)
+            for img_url in images:
+                img_filename = os.path.basename(img_url)
                 try:
                     img_number = int(img_filename.split("_")[-1].replace(".png", ""))
                     image_key = (page_number, img_number)
                     if image_key not in used_images:
                         used_images.add(image_key)
-                        matching_images.append((page_number, img_number, img_path))
+                        matching_images.append((page_number, img_number, img_url))
                         if len(matching_images) >= max_images:
                             break
                 except (IndexError, ValueError) as e:
-                    st.error(f"Error parsing image path {img_path}: {e}")
+                    st.error(f"Error parsing image URL {img_url}: {e}")
                     continue
             if len(matching_images) >= max_images:
                 break
@@ -412,14 +464,14 @@ def display_chat_history():
                         st.markdown(f"**Step: {step_name}**")
                         st.markdown(step_text)
                         if step_name in message.get("step_images", {}) and message["step_images"][step_name]:
-                            for page_num, img_num, img_path in message["step_images"][step_name]:
+                            for page_num, img_num, img_url in message["step_images"][step_name]:
                                 try:
-                                    image = Image.open(img_path)
-                                    resized_image = resize_image(image, target_width=600)
+                                    image = load_image_from_url(img_url)
+                                    resized_image = resize_image(image, target_width=600, target_height=400)
                                     caption = f"Page {page_num}, Image {img_num}"
                                     st.image(resized_image, caption=caption, use_container_width=True)
                                 except Exception as e:
-                                    st.error(f"Error loading image {img_path}: {str(e)}")
+                                    st.warning(f"Could not load image from {img_url}: {str(e)}. Please check the URL or S3 bucket permissions.")
                 
                 # Display conclusion (no images)
                 if conclusion_text:
@@ -527,14 +579,14 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                         st.markdown(f"**Step: {step_name}**")
                         st.markdown(step_text)
                         if step_name in step_images and step_images[step_name]:
-                            for page_num, img_num, img_path in step_images[step_name]:
+                            for page_num, img_num, img_url in step_images[step_name]:
                                 try:
-                                    image = Image.open(img_path)
-                                    resized_image = resize_image(image, target_width=600)
+                                    image = load_image_from_url(img_url)
+                                    resized_image = resize_image(image, target_width=600, target_height=400)
                                     caption = f"Page {page_num}, Image {img_num}"
                                     st.image(resized_image, caption=caption, use_container_width=True)
                                 except Exception as e:
-                                    st.error(f"Error loading image {img_path}: {str(e)}")
+                                    st.warning(f"Could not load image from {img_url}: {str(e)}. Please check the URL or S3 bucket permissions.")
                 
                 # Display conclusion (no images)
                 if conclusion_text:

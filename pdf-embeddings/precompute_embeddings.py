@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 # Load the dataset
 DATASET_PATH = "../pdf_dataset.json"
-with open(DATASET_PATH, "r") as f:
+with open(DATASET_PATH, "r", encoding="utf-8") as f:
     dataset = json.load(f)
 
 # Initialize text embedder
@@ -21,12 +21,16 @@ text_embeddings = text_embedder.encode(texts, convert_to_numpy=True)
 text_index = faiss.IndexFlatL2(text_embeddings.shape[1])
 text_index.add(text_embeddings)
 
+# Ensure the output directory exists
+output_dir = "pdf-embeddings"
+os.makedirs(output_dir, exist_ok=True)
+
 # Save the embeddings and index to disk
-np.save("pdf-embeddings/text_embeddings.npy", text_embeddings)
-faiss.write_index(text_index, "pdf-embeddings/text_index.faiss")
+np.save(os.path.join(output_dir, "text_embeddings.npy"), text_embeddings)
+faiss.write_index(text_index, os.path.join(output_dir, "text_index.faiss"))
 
 # Save the texts and dataset for reference
-with open("pdf-embeddings/metadata.json", "w") as f:
+with open(os.path.join(output_dir, "metadata.json"), "w", encoding="utf-8") as f:
     json.dump({"texts": texts, "dataset": dataset}, f, indent=4)
 
-print("Precomputation complete. Embeddings and index saved.")
+print("Precomputation complete. Embeddings and index saved at 05:52 PM IST on Saturday, May 24, 2025.")
