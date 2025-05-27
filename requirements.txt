@@ -39,3 +39,5 @@ bson==0.5.10  # sometimes not required, but included for ObjectId handling if ne
 
 # Required for numpy (used with faiss, etc.)
 numpy==1.26.4
+
+torch==2.7.0
