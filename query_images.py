@@ -1,5 +1,4 @@
 import json
-import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 from chatbot.response_generator import generate_response

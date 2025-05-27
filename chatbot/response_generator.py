@@ -5,7 +5,6 @@ import os
 from dotenv import load_dotenv
 print(f"Current working directory: {os.getcwd()}")
 print(f"Looking for query_handler in: {os.path.join(os.getcwd(), 'chatbot', 'query_handler.py')}")
-from .query_handler import find_relevant_images_for_steps
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")

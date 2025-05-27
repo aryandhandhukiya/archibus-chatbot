@@ -10,7 +10,6 @@ from mongodb_utils import (
     delete_chat,
     get_db
 )
-import base64
 from io import BytesIO
 from PIL import Image
 import re

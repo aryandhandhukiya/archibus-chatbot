@@ -1,8 +1,6 @@
-import os
 from datetime import datetime
 import traceback
 from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
 import streamlit as st
 from bson.objectid import ObjectId
 
