@@ -23,9 +23,6 @@ requests==2.32.3
 # Environment variable management
 python-dotenv==1.0.1
 
-# BSON for ObjectId (used with pymongo)
-bson==0.5.10  # sometimes not required, but included for ObjectId handling if needed outside pymongo
-
 # Logging and utility (Python stdlib, so no pip needed):
 # - re
 # - os
