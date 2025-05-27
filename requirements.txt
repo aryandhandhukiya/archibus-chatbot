@@ -9,7 +9,6 @@ google-generativeai==0.8.3
 
 # NLP / Embeddings
 sentence-transformers==3.0.1
-torch==2.4.0
 faiss-cpu==1.7.4  # CPU version; switch to faiss-gpu if using GPU EC2 instance
 
 # Vector database
