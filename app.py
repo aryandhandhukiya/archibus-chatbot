@@ -22,10 +22,6 @@ import os
 import requests
 
 # Load precomputed embeddings and index
-# EMBEDDINGS_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\text_embeddings.npy"
-# INDEX_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\text_index.faiss"
-# METADATA_PATH = "D:\\ArchiBusV2\\archibus-chatbot\\pdf-embeddings\\metadata.json"
-
 EMBEDDINGS_PATH = "pdf-embeddings/text_embeddings.npy"
 INDEX_PATH = "pdf-embeddings/text_index.faiss"
 METADATA_PATH = "pdf-embeddings/metadata.json"
@@ -103,31 +99,47 @@ def split_response_into_steps(text_response):
     
     return intro_text, steps, conclusion_text
 
-# Function to resize and crop image to a fixed size (600px x 400px)
-def resize_image(image, target_width=600, target_height=400):
-    # Step 1: Resize the image to fit within the target dimensions while maintaining aspect ratio
-    original_width, original_height = image.size
-    target_aspect = target_width / target_height
-    original_aspect = original_width / original_height
-
-    if original_aspect > target_aspect:
-        # Image is wider than target aspect ratio: fit height, crop width
-        new_height = target_height
-        new_width = int(new_height * original_aspect)
-        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        # Crop the width to fit target_width
-        left = (new_width - target_width) // 2
-        image = image.crop((left, 0, left + target_width, target_height))
-    else:
-        # Image is taller than target aspect ratio: fit width, crop height
-        new_width = target_width
-        new_height = int(new_width / original_aspect)
-        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        # Crop the height to fit target_height
-        top = (new_height - target_height) // 2
-        image = image.crop((0, top, target_width, top + target_height))
+# Enhanced function to standardize image size with padding (maintains aspect ratio)
+def standardize_image_size(image, target_width=600, target_height=400, fill_color=(255, 255, 255)):
+    """
+    Standardize image size by resizing and padding to exact dimensions
+    """
+    # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
     
-    return image
+    # Calculate scaling factor to fit image within target dimensions
+    original_width, original_height = image.size
+    scale_width = target_width / original_width
+    scale_height = target_height / original_height
+    scale = min(scale_width, scale_height)  # Use smaller scale to fit entirely
+    
+    # Resize image maintaining aspect ratio
+    new_width = int(original_width * scale)
+    new_height = int(original_height * scale)
+    image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Create new image with target dimensions and fill color
+    standardized_image = Image.new('RGB', (target_width, target_height), fill_color)
+    
+    # Calculate position to center the resized image
+    x_offset = (target_width - new_width) // 2
+    y_offset = (target_height - new_height) // 2
+    
+    # Paste the resized image onto the standardized canvas
+    standardized_image.paste(image, (x_offset, y_offset))
+    
+    return standardized_image
+
+# Alternative function for stretching (may distort aspect ratio)
+def standardize_image_size_stretch(image, target_width=600, target_height=400):
+    """
+    Alternative: Stretch image to exact dimensions (may distort aspect ratio)
+    """
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    return image.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
 # Function to load an image from an S3 URL with detailed error handling
 def load_image_from_url(url):
@@ -240,7 +252,7 @@ if "regeneration_prompt" not in st.session_state:
 if "regeneration_index" not in st.session_state:
     st.session_state.regeneration_index = None
 
-# Custom Navbar and Styling
+# Enhanced Custom Navbar and Styling with improved image consistency
 st.markdown(
     """
     <style>
@@ -303,37 +315,59 @@ st.markdown(
             margin-top: 2px;
         }
 
-        /* Enhanced image styling */
+        /* Enhanced image styling for consistent display */
         .stImage {
-            width: 100 !important;
-            max-width: 1200px !important;
-            margin: 0 auto;
+            display: flex !important;
+            justify-content: center !important;
+            margin: 1.5rem auto !important;
+            max-width: 620px !important;
         }
 
         .stImage img {
-            width: 100 !important;
-            height: auto !important;
-            border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            width: 600px !important;
+            height: 400px !important;
+            object-fit: contain !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1) !important;
+            border: 1px solid #e0e0e0 !important;
+            background-color: #f8f9fa !important;
         }
 
         .stImage:hover img {
-            transform: scale(1.02);
-            transition: transform 0.3s ease;
+            transform: scale(1.02) !important;
+            transition: transform 0.3s ease !important;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15) !important;
         }
 
         /* Image caption styling */
         .stImage > div:last-child {
-            text-align: center;
-            font-size: 1rem;
-            color: #666;
-            margin-top: 8px;
+            text-align: center !important;
+            font-size: 0.9rem !important;
+            color: #666 !important;
+            margin-top: 8px !important;
+            font-weight: 500 !important;
         }
 
         /* Image container spacing */
         .element-container:has(.stImage) {
-            margin: 2rem auto;
-            padding: 1rem 0;
+            margin: 1.5rem auto !important;
+            padding: 1rem 0 !important;
+            max-width: 620px !important;
+        }
+
+        /* Step container styling */
+        .step-container {
+            margin: 1.5rem 0 !important;
+            padding: 1rem !important;
+            border-left: 3px solid #007acc !important;
+            background-color: #f8f9fa !important;
+            border-radius: 0 8px 8px 0 !important;
+        }
+
+        /* Ensure consistent spacing for all content */
+        .main .block-container {
+            padding-top: 2rem !important;
+            padding-bottom: 2rem !important;
         }
     </style>
     """,
@@ -443,7 +477,7 @@ st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
 st.session_state.language = selected_language
 
-# Display Chat History in Main Area
+# Enhanced Display Chat History in Main Area with consistent image sizing
 def display_chat_history():
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
@@ -458,7 +492,7 @@ def display_chat_history():
                 if intro_text:
                     st.markdown(intro_text)
                 
-                # Display steps with images
+                # Display steps with standardized images
                 for step_name, step_text in steps:
                     with st.container():
                         st.markdown(f"**Step: {step_name}**")
@@ -467,9 +501,11 @@ def display_chat_history():
                             for page_num, img_num, img_url in message["step_images"][step_name]:
                                 try:
                                     image = load_image_from_url(img_url)
-                                    resized_image = resize_image(image, target_width=600, target_height=400)
+                                    # Use the new standardization function
+                                    standardized_image = standardize_image_size(image, target_width=600, target_height=400)
                                     caption = f"Page {page_num}, Image {img_num}"
-                                    st.image(resized_image, caption=caption, use_container_width=True)
+                                    # Use width parameter for consistent sizing
+                                    st.image(standardized_image, caption=caption, width=600)
                                 except Exception as e:
                                     st.warning(f"Could not load image from {img_url}: {str(e)}. Please check the URL or S3 bucket permissions.")
                 
@@ -506,7 +542,7 @@ def display_chat_history():
                                     st.error(f"Error updating chat history: {str(e)}")
                             st.rerun()
 
-# Handle User Input and Display Steps + Images
+# Enhanced Handle User Input and Display Steps + Images with consistent sizing
 def handle_user_input(prompt, regenerate=False, message_index=None):
     if not regenerate:
         if not st.session_state.current_chat_id:
@@ -573,7 +609,7 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                 if intro_text:
                     st.markdown(intro_text)
                 
-                # Display steps with images
+                # Display steps with standardized images
                 for step_name, step_text in steps:
                     with st.container():
                         st.markdown(f"**Step: {step_name}**")
@@ -582,9 +618,11 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                             for page_num, img_num, img_url in step_images[step_name]:
                                 try:
                                     image = load_image_from_url(img_url)
-                                    resized_image = resize_image(image, target_width=600, target_height=400)
+                                    # Use the new standardization function
+                                    standardized_image = standardize_image_size(image, target_width=600, target_height=400)
                                     caption = f"Page {page_num}, Image {img_num}"
-                                    st.image(resized_image, caption=caption, use_container_width=True)
+                                    # Use width parameter for consistent sizing
+                                    st.image(standardized_image, caption=caption, width=600)
                                 except Exception as e:
                                     st.warning(f"Could not load image from {img_url}: {str(e)}. Please check the URL or S3 bucket permissions.")
                 

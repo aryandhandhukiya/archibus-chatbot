@@ -7,7 +7,7 @@ import re
 import os
 
 # Load the dataset
-DATASET_PATH = "../pdf_dataset.json"
+DATASET_PATH = "./pdf_dataset.json"
 with open(DATASET_PATH, "r") as f:
     dataset = json.load(f)
 
