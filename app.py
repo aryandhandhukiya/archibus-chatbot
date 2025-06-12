@@ -1,5 +1,4 @@
 import streamlit as st
-from chatbot.response_generator import generate_response
 from datetime import datetime, timedelta
 from mongodb_utils import (
     create_new_chat,
@@ -12,91 +11,30 @@ from mongodb_utils import (
 )
 from io import BytesIO
 from PIL import Image
-import re
-import json
-import numpy as np
-import faiss
-from sentence_transformers import SentenceTransformer
-import os
 import requests
+import logging
 
-# Load precomputed embeddings and index
-EMBEDDINGS_PATH = "pdf-embeddings/text_embeddings.npy"
-INDEX_PATH = "pdf-embeddings/text_index.faiss"
-METADATA_PATH = "pdf-embeddings/metadata.json"
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Load the precomputed data
-text_embeddings = np.load(EMBEDDINGS_PATH)
-text_index = faiss.read_index(INDEX_PATH)
-with open(METADATA_PATH, "r", encoding="utf-8") as f:
-    metadata = json.load(f)
-texts = metadata["texts"]
-dataset = metadata["dataset"]
+# FastAPI backend URL
+BACKEND_URL = "http://localhost:8000"
 
-# Initialize text embedder for embedding step text
-text_embedder = SentenceTransformer('all-MiniLM-L6-v2')
+# Function to check if the backend is running
+def check_backend_health():
+    try:
+        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+        response.raise_for_status()
+        return response.json().get("status") == "ok"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Backend health check failed: {str(e)}")
+        return False
 
-# Function to dynamically split the text response into steps, intro, and conclusion
-def split_response_into_steps(text_response):
-    numbered_pattern = r'(\d+\.\s|\d+\)\s)'
-    transitional_phrases = [
-        r'First(?:,|\b)',
-        r'Next(?:,|\b)',
-        r'After that(?:,|\b)',
-        r'Now(?:,|\b)',
-        r'Finally(?:,|\b)',
-        r'Step\s+\d+(?:,|\b)'
-    ]
-    transitional_pattern = '|'.join(transitional_phrases)
-    step_pattern = f'({numbered_pattern}|{transitional_pattern})'
-    conclusion_pattern = r'(Conclusion:|In conclusion,).*$'
-
-    # Extract conclusion
-    conclusion_match = re.search(conclusion_pattern, text_response, re.IGNORECASE | re.DOTALL)
-    conclusion_text = conclusion_match.group(0).strip() if conclusion_match else ""
-    if conclusion_match:
-        text_response = text_response[:conclusion_match.start()].strip()
-
-    # Find all matches of step markers
-    matches = list(re.finditer(step_pattern, text_response, re.IGNORECASE))
-    
-    if not matches:
-        return text_response.strip(), [("Full Response", text_response.strip())], conclusion_text
-
-    # Extract the introductory text (before the first step)
-    intro_text = text_response[:matches[0].start()].strip()
-
-    # Split the response into steps based on matches
-    steps = []
-    step_dict = {}  # To track steps by name and merge duplicates
-    for i, match in enumerate(matches):
-        start_pos = match.start()
-        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text_response)
-        step_text = text_response[start_pos:end_pos].strip()
-        step_name = match.group().strip()
-        if step_name.endswith(","):
-            step_name = step_name[:-1]
-
-        # Normalize step name for deduplication (case-insensitive)
-        step_name_key = step_name.lower()
-        if step_name_key in step_dict:
-            # Merge the step text with the existing step
-            step_dict[step_name_key]["text"] += "\n" + step_text
-        else:
-            step_dict[step_name_key] = {"name": step_name, "text": step_text}
-
-    # Convert the dictionary to a list of tuples, ensuring sequential numbering
-    step_counter = 1
-    for step_key, step_data in sorted(step_dict.items(), key=lambda x: matches[list(step_dict.keys()).index(x[0])].start()):
-        step_name = step_data["name"]
-        # If the step name is a number (e.g., "1."), use it; otherwise, use the counter
-        if re.match(r'^\d+\.\s', step_name):
-            steps.append((step_name, step_data["text"]))
-        else:
-            steps.append((f"{step_counter}.", step_data["text"]))
-            step_counter += 1
-    
-    return intro_text, steps, conclusion_text
+# Ensure backend is running
+if not check_backend_health():
+    st.error("FastAPI backend is not running. Please start the server at http://localhost:8000.")
+    st.stop()
 
 # Enhanced function to standardize image size with padding (maintains aspect ratio)
 def standardize_image_size(image, target_width=600, target_height=400, fill_color=(255, 255, 255)):
@@ -130,22 +68,12 @@ def standardize_image_size(image, target_width=600, target_height=400, fill_colo
     
     return standardized_image
 
-# Alternative function for stretching (may distort aspect ratio)
-def standardize_image_size_stretch(image, target_width=600, target_height=400):
-    """
-    Alternative: Stretch image to exact dimensions (may distort aspect ratio)
-    """
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    return image.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
-# Function to load an image from an S3 URL with detailed error handling
+# Function to load an image from an S3 URL with silent error handling
 def load_image_from_url(url):
     try:
         # Verify that the URL is a string and starts with http/https
         if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
-            raise ValueError(f"Invalid URL format: {url}")
+            return None
 
         # Fetch the image from the URL
         response = requests.get(url, stream=True, timeout=10)
@@ -162,69 +90,9 @@ def load_image_from_url(url):
         
         return image
 
-    except requests.exceptions.RequestException as e:
-        # Handle network-related errors (e.g., 403 Forbidden, 404 Not Found, timeout)
-        raise Exception(f"Network error while fetching image from {url}: {str(e)}")
-    except ValueError as e:
-        # Handle invalid URL format
-        raise Exception(str(e))
-    except Exception as e:
-        # Handle other errors (e.g., corrupt image, PIL errors)
-        raise Exception(f"Error processing image from {url}: {str(e)}")
-
-# Function to find images based on step text, default to 1 image per step
-def find_images_for_step(step_text, used_images, k=3, max_images=1):
-    step_embedding = text_embedder.encode([step_text], convert_to_numpy=True)
-    D, I = text_index.search(step_embedding, k=k)
-    
-    matching_images = []
-    for idx in I[0]:
-        page_data = dataset[idx]
-        page_number = page_data["page_number"]
-        images = page_data["images"]
-        
-        for img_url in images:  # Images are S3 URLs
-            img_filename = os.path.basename(img_url)
-            try:
-                img_number = int(img_filename.split("_")[-1].replace(".png", ""))
-                image_key = (page_number, img_number)
-                if image_key not in used_images:
-                    used_images.add(image_key)
-                    matching_images.append((page_number, img_number, img_url))
-                    if len(matching_images) >= max_images:
-                        break
-            except (IndexError, ValueError) as e:
-                st.error(f"Error parsing image URL {img_url}: {e}")
-                continue
-        if len(matching_images) >= max_images:
-            break
-    
-    # Fallback: If no images are found, search again with a broader query
-    if len(matching_images) < max_images:
-        simplified_text = " ".join(step_text.split()[:5])  # Use first 5 words
-        step_embedding = text_embedder.encode([simplified_text], convert_to_numpy=True)
-        D, I = text_index.search(step_embedding, k=k)
-        for idx in I[0]:
-            page_data = dataset[idx]
-            page_number = page_data["page_number"]
-            images = page_data["images"]
-            for img_url in images:
-                img_filename = os.path.basename(img_url)
-                try:
-                    img_number = int(img_filename.split("_")[-1].replace(".png", ""))
-                    image_key = (page_number, img_number)
-                    if image_key not in used_images:
-                        used_images.add(image_key)
-                        matching_images.append((page_number, img_number, img_url))
-                        if len(matching_images) >= max_images:
-                            break
-                except (IndexError, ValueError) as e:
-                    st.error(f"Error parsing image URL {img_url}: {e}")
-                    continue
-            if len(matching_images) >= max_images:
-                break
-    
-    return matching_images[:max_images]
+    except Exception:
+        # Silently return None on any error
+        return None
 
 st.set_page_config(page_title="Archibus AI", layout="wide")
 
@@ -476,12 +344,13 @@ st.sidebar.markdown("## Language")
 selected_language = st.sidebar.radio("Choose Language:", ["English", "Japanese"])
 st.session_state.language = selected_language
 
-# Enhanced Display Chat History in Main Area with consistent image sizing
+# Display Chat History in Main Area with silent image skipping
 def display_chat_history():
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
-            content = message.get("content", "")
-            if message["role"] == "assistant" and "steps" in message:
+            if message["role"] == "user":
+                st.markdown(message["content"])
+            else:
                 # Extract components
                 intro_text = message.get("intro_text", "")
                 steps = message.get("steps", [])
@@ -491,29 +360,23 @@ def display_chat_history():
                 if intro_text:
                     st.markdown(intro_text)
                 
-                # Display steps with standardized images
-                for step_name, step_text in steps:
+                # Display steps with silent image skipping
+                for step in steps:
                     with st.container():
-                        st.markdown(f"**Step: {step_name}**")
-                        st.markdown(step_text)
-                        if step_name in message.get("step_images", {}) and message["step_images"][step_name]:
-                            for page_num, img_num, img_url in message["step_images"][step_name]:
-                                try:
-                                    image = load_image_from_url(img_url)
-                                    # Use the new standardization function
-                                    standardized_image = standardize_image_size(image, target_width=600, target_height=400)
-                                    caption = f"Page {page_num}, Image {img_num}"
-                                    # Use width parameter for consistent sizing
-                                    st.image(standardized_image, caption=caption, width=600)
-                                except Exception as e:
-                                    st.warning(f"Could not load image from {img_url}: {str(e)}. Please check the URL or S3 bucket permissions.")
+                        st.markdown(f"**Step: {step['step_name']}**")
+                        st.markdown(step["step_text"])
+                        if step.get("best_image"):
+                            img = step["best_image"]
+                            image = load_image_from_url(img["path"])
+                            if image:  # Only display if image was loaded successfully
+                                standardized_image = standardize_image_size(image, target_width=600, target_height=400)
+                                caption = f"Page {img['page']}, Image {img['image']}"
+                                st.image(standardized_image, caption=caption, width=600)
                 
                 # Display conclusion (no images)
                 if conclusion_text:
                     st.markdown("### Conclusion")
                     st.markdown(conclusion_text)
-            else:
-                st.markdown(content)
             
             if message["role"] == "assistant":
                 col1, col2, col3 = st.columns([1, 6, 1])
@@ -541,7 +404,7 @@ def display_chat_history():
                                     st.error(f"Error updating chat history: {str(e)}")
                             st.rerun()
 
-# Enhanced Handle User Input and Display Steps + Images with consistent sizing
+# Handle User Input by Sending Request to FastAPI Backend
 def handle_user_input(prompt, regenerate=False, message_index=None):
     if not regenerate:
         if not st.session_state.current_chat_id:
@@ -565,27 +428,29 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
     with st.chat_message("assistant"):
         try:
             with st.spinner("Thinking..." if not regenerate else "Regenerating response..."):
-                response_data = generate_response(prompt, st.session_state.language)
-                content = response_data["response"]
-                
-                # Split the response into introductory text, steps, and conclusion
-                intro_text, steps, conclusion_text = split_response_into_steps(content)
-                
-                # Find images for each step, default to 1 image
-                step_images = {}
-                used_images = set()
-                for step_name, step_text in steps:
-                    matching_images = find_images_for_step(step_text, used_images, k=3, max_images=1)
-                    step_images[step_name] = matching_images
-                
-                # Prepare message data with steps and images
+                # Send request to FastAPI backend
+                payload = {
+                    "question": prompt,
+                    "language": st.session_state.language
+                }
+                response = requests.post(f"{BACKEND_URL}/query", json=payload, timeout=30)
+                response.raise_for_status()
+                response_data = response.json()
+
+                # Prepare message data
                 message_data = {
                     "role": "assistant",
-                    "content": content,
-                    "intro_text": intro_text,
-                    "steps": steps,
-                    "conclusion_text": conclusion_text,
-                    "step_images": step_images
+                    "intro_text": response_data["intro_text"],
+                    "steps": [
+                        {
+                            "step_name": step["step_name"],
+                            "step_text": step["step_text"],
+                            "images": step["images"],
+                            "best_image": step["best_image"]
+                        }
+                        for step in response_data["steps"]
+                    ],
+                    "conclusion_text": response_data["conclusion_text"]
                 }
                 
                 # Append or update message in session state
@@ -605,30 +470,26 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                         st.error(f"Error saving assistant message: {str(e)}")
                 
                 # Display the introductory text (if any)
-                if intro_text:
-                    st.markdown(intro_text)
+                if message_data["intro_text"]:
+                    st.markdown(message_data["intro_text"])
                 
-                # Display steps with standardized images
-                for step_name, step_text in steps:
+                # Display steps with silent image skipping
+                for step in message_data["steps"]:
                     with st.container():
-                        st.markdown(f"**Step: {step_name}**")
-                        st.markdown(step_text)
-                        if step_name in step_images and step_images[step_name]:
-                            for page_num, img_num, img_url in step_images[step_name]:
-                                try:
-                                    image = load_image_from_url(img_url)
-                                    # Use the new standardization function
-                                    standardized_image = standardize_image_size(image, target_width=600, target_height=400)
-                                    caption = f"Page {page_num}, Image {img_num}"
-                                    # Use width parameter for consistent sizing
-                                    st.image(standardized_image, caption=caption, width=600)
-                                except Exception as e:
-                                    st.warning(f"Could not load image from {img_url}: {str(e)}. Please check the URL or S3 bucket permissions.")
+                        st.markdown(f"**Step: {step['step_name']}**")
+                        st.markdown(step["step_text"])
+                        if step.get("best_image"):
+                            img = step["best_image"]
+                            image = load_image_from_url(img["path"])
+                            if image:  # Only display if image was loaded successfully
+                                standardized_image = standardize_image_size(image, target_width=600, target_height=400)
+                                caption = f"Page {img['page']}, Image {img['image']}"
+                                st.image(standardized_image, caption=caption, width=600)
                 
                 # Display conclusion (no images)
-                if conclusion_text:
+                if message_data["conclusion_text"]:
                     st.markdown("### Conclusion")
-                    st.markdown(conclusion_text)
+                    st.markdown(message_data["conclusion_text"])
                 
                 st.session_state.feedback_key += 1
                 col1, col2, col3 = st.columns([1, 6, 1])
@@ -654,6 +515,8 @@ def handle_user_input(prompt, regenerate=False, message_index=None):
                                 st.error(f"Error updating chat history: {str(e)}")
                         st.rerun()
                     
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error communicating with backend: {str(e)}")
         except Exception as e:
             st.error(f"Error processing response: {str(e)}")
 

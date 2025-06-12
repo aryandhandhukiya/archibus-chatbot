@@ -6,8 +6,8 @@ import re
 import os
 
 # Load the dataset
-DATASET_PATH = "./pdf_dataset.json"
-with open(DATASET_PATH, "r") as f:
+DATASET_PATH = "D:\\ArchibusV2\\archibus-chatbot\\pdf_dataset.json"
+with open(DATASET_PATH, "r", encoding="utf-8") as f:
     dataset = json.load(f)
 
 # Initialize text embedder for matching text responses
