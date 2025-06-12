@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # FastAPI backend URL
-BACKEND_URL = "https://3639-103-20-65-202.ngrok-free.app"
+BACKEND_URL = "https://touching-free-tick.ngrok-free.app"
 
 # Function to check if the backend is running
 def check_backend_health():
