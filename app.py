@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # FastAPI backend URL
-BACKEND_URL = "http://archibus-ai.ddns.net:8000"
+BACKEND_URL = "http://54.194.75.18:8000"
 
 # Function to check if the backend is running
 def check_backend_health():
